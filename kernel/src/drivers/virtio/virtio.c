@@ -3,21 +3,22 @@
 #include "../../boot/requests.h"
 #include "../../lib/string.h"
 #include "../../mm/pmm.h"
+#include "../../mm/vmm.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-#define PCI_CAP_ID_VENDOR    0x09
-#define PCI_STATUS_CAP_LIST  0x10
-#define PCI_COMMAND_OFFSET   0x04
-#define PCI_STATUS_OFFSET    0x06
-#define PCI_CAP_PTR_OFFSET   0x34
-#define PCI_COMMAND_MEMORY   0x0002
+#define PCI_CAP_ID_VENDOR 0x09
+#define PCI_STATUS_CAP_LIST 0x10
+#define PCI_COMMAND_OFFSET 0x04
+#define PCI_STATUS_OFFSET 0x06
+#define PCI_CAP_PTR_OFFSET 0x34
+#define PCI_COMMAND_MEMORY 0x0002
 #define PCI_COMMAND_BUS_MASTER 0x0004
 
 #define VIRTIO_PCI_CAP_COMMON_CFG 1
 #define VIRTIO_PCI_CAP_NOTIFY_CFG 2
-#define VIRTIO_PCI_CAP_ISR_CFG    3
+#define VIRTIO_PCI_CAP_ISR_CFG 3
 #define VIRTIO_PCI_CAP_DEVICE_CFG 4
 
 /* Layout mandated by the virtio 1.x spec ("Common configuration */
@@ -71,22 +72,30 @@ int virtio_pci_init(const struct pci_device *pci, struct virtio_device *vdev) {
 
     uint16_t command = pci_config_read16(pci->bus, pci->slot, pci->func, PCI_COMMAND_OFFSET);
     pci_config_write16(pci->bus, pci->slot, pci->func, PCI_COMMAND_OFFSET,
-                        (uint16_t)(command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER));
+                       (uint16_t)(command | PCI_COMMAND_MEMORY | PCI_COMMAND_BUS_MASTER));
 
-    uint64_t hhdm_offset = hhdm_request.response->offset;
-
-    uint8_t cap_ptr = (uint8_t)(pci_config_read8(pci->bus, pci->slot, pci->func, PCI_CAP_PTR_OFFSET) & 0xFC);
+    uint8_t cap_ptr =
+        (uint8_t)(pci_config_read8(pci->bus, pci->slot, pci->func, PCI_CAP_PTR_OFFSET) & 0xFC);
     while (cap_ptr != 0) {
         uint8_t cap_id = pci_config_read8(pci->bus, pci->slot, pci->func, cap_ptr);
         uint8_t cap_next = pci_config_read8(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 1));
 
         if (cap_id == PCI_CAP_ID_VENDOR) {
-            uint8_t cfg_type = pci_config_read8(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 3));
+            uint8_t cfg_type =
+                pci_config_read8(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 3));
             uint8_t bar = pci_config_read8(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 4));
-            uint32_t offset = pci_config_read32(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 8));
+            uint32_t offset =
+                pci_config_read32(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 8));
+            uint32_t length =
+                pci_config_read32(pci->bus, pci->slot, pci->func, (uint8_t)(cap_ptr + 12));
 
+            /* BARs (especially 64-bit ones) commonly live way outside */
+            /* what Limine's HHDM covers -- QEMU/OVMF placed this one at */
+            /* physical ~0xc000000000 in testing, nowhere near the actual */
+            /* RAM HHDM maps. Map each capability's region explicitly */
+            /* instead of assuming hhdm_offset + phys reaches it. */
             uint64_t base = bar_base(pci, bar);
-            volatile uint8_t *region = (volatile uint8_t *)(uintptr_t)(base + offset + hhdm_offset);
+            volatile uint8_t *region = (volatile uint8_t *)vmm_map_mmio(base + offset, length);
 
             switch (cfg_type) {
                 case VIRTIO_PCI_CAP_COMMON_CFG:
@@ -119,7 +128,7 @@ int virtio_pci_init(const struct pci_device *pci, struct virtio_device *vdev) {
     /* Spec init step 1: reset, then wait for the device to observe it. */
     vdev->common->device_status = 0;
     while (vdev->common->device_status != 0) {
-        asm volatile ("pause");
+        asm volatile("pause");
     }
 
     return 0;
@@ -213,7 +222,8 @@ int virtio_queue_init(struct virtio_device *vdev, uint16_t index, struct virtio_
     cfg->queue_enable = 1;
 
     uint16_t notify_off = cfg->queue_notify_off;
-    q->notify = (volatile uint16_t *)(vdev->notify_base + (uint32_t)notify_off * vdev->notify_off_multiplier);
+    q->notify = (volatile uint16_t *)(vdev->notify_base +
+                                      (uint32_t)notify_off * vdev->notify_off_multiplier);
 
     return 0;
 }
@@ -233,7 +243,8 @@ static void virtio_queue_free_chain(struct virtio_queue *q, uint16_t head) {
     }
 }
 
-void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffer *buffers, int count) {
+void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffer *buffers,
+                               int count) {
     if (count <= 0 || count > 8 || q->num_free < (uint16_t)count) {
         kprintf("virtio: submit_chain rejected (count=%d, free=%u)\n", count, q->num_free);
         return;
@@ -265,16 +276,16 @@ void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffe
 
     uint16_t avail_slot = (uint16_t)(q->avail->idx % q->size);
     q->avail->ring[avail_slot] = indices[0];
-    asm volatile ("" ::: "memory"); /* Ring entry must be visible before idx bumps. */
+    asm volatile("" ::: "memory"); /* Ring entry must be visible before idx bumps. */
     q->avail->idx = (uint16_t)(q->avail->idx + 1);
-    asm volatile ("" ::: "memory");
+    asm volatile("" ::: "memory");
 
     *q->notify = q->index;
 }
 
 uint32_t virtio_queue_wait(struct virtio_queue *q) {
     while (q->used->idx == q->last_used_idx) {
-        asm volatile ("pause");
+        asm volatile("pause");
     }
 
     uint16_t used_slot = (uint16_t)(q->last_used_idx % q->size);

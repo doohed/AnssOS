@@ -27,7 +27,7 @@ void pmm_init(void) {
     if (memmap_request.response == NULL || hhdm_request.response == NULL) {
         kprintf("PMM: PANIC: missing memmap or HHDM response from bootloader\n");
         for (;;) {
-            asm volatile ("cli; hlt");
+            asm volatile("cli; hlt");
         }
     }
 
@@ -37,8 +37,7 @@ void pmm_init(void) {
     uint64_t highest_addr = 0;
     for (uint64_t i = 0; i < mm->entry_count; i++) {
         struct limine_memmap_entry *e = mm->entries[i];
-        if (e->type == LIMINE_MEMMAP_USABLE ||
-            e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
+        if (e->type == LIMINE_MEMMAP_USABLE || e->type == LIMINE_MEMMAP_BOOTLOADER_RECLAIMABLE) {
             uint64_t end = e->base + e->length;
             if (end > highest_addr) {
                 highest_addr = end;
@@ -51,20 +50,25 @@ void pmm_init(void) {
 
     /* Park the bitmap itself in the first usable region big enough to */
     /* hold it, and reach it through the HHDM until we have our own */
-    /* virtual memory manager. */
+    /* virtual memory manager. Note: address 0x0 is a legitimate region */
+    /* base (the first usable entry commonly starts there), so "found" */
+    /* has to be tracked separately -- it can't be inferred from */
+    /* bitmap_phys staying zero. */
     uint64_t bitmap_phys = 0;
+    int bitmap_region_found = 0;
     for (uint64_t i = 0; i < mm->entry_count; i++) {
         struct limine_memmap_entry *e = mm->entries[i];
         if (e->type == LIMINE_MEMMAP_USABLE && e->length >= bitmap_size_bytes) {
             bitmap_phys = e->base;
+            bitmap_region_found = 1;
             break;
         }
     }
 
-    if (bitmap_phys == 0) {
+    if (!bitmap_region_found) {
         kprintf("PMM: PANIC: no usable region large enough for the page bitmap\n");
         for (;;) {
-            asm volatile ("cli; hlt");
+            asm volatile("cli; hlt");
         }
     }
 
@@ -98,8 +102,8 @@ void pmm_init(void) {
 
     alloc_cursor = 0;
 
-    kprintf("PMM: %lu pages tracked, %lu MiB free\n",
-            total_pages, (free_pages * PMM_PAGE_SIZE) / (1024 * 1024));
+    kprintf("PMM: %lu pages tracked, %lu MiB free\n", total_pages,
+            (free_pages * PMM_PAGE_SIZE) / (1024 * 1024));
 }
 
 static uint64_t try_alloc_from(uint64_t start, uint64_t end) {

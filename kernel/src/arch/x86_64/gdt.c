@@ -6,7 +6,7 @@
 /* Selectors, fixed by the layout of struct gdt_table below. */
 #define SEL_KCODE 0x08
 #define SEL_KDATA 0x10
-#define SEL_TSS   0x28
+#define SEL_TSS 0x28
 
 struct __attribute__((packed)) gdt_entry {
     uint16_t limit_low;
@@ -60,8 +60,8 @@ static struct gdt_table gdt;
 static struct tss tss;
 static struct gdtr gdtr_val;
 
-static void gdt_set_entry(struct gdt_entry *e, uint32_t base, uint32_t limit,
-                           uint8_t access, uint8_t granularity_flags) {
+static void gdt_set_entry(struct gdt_entry *e, uint32_t base, uint32_t limit, uint8_t access,
+                          uint8_t granularity_flags) {
     e->limit_low = limit & 0xFFFF;
     e->base_low = base & 0xFFFF;
     e->base_mid = (base >> 16) & 0xFF;
@@ -120,7 +120,7 @@ void gdt_init(void) {
     gdtr_val.limit = sizeof(gdt) - 1;
     gdtr_val.base = (uint64_t)&gdt;
 
-    asm volatile ("lgdt (%0)" : : "r"(&gdtr_val) : "memory");
+    asm volatile("lgdt (%0)" : : "r"(&gdtr_val) : "memory");
     gdt_reload_segments();
-    asm volatile ("ltr %%ax" : : "a"((uint16_t)SEL_TSS));
+    asm volatile("ltr %%ax" : : "a"((uint16_t)SEL_TSS));
 }

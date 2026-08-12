@@ -1,0 +1,18 @@
+# Matches the style already used throughout kernel/src: 4-space indent,
+# braces attached (not on their own line), pointer glued to the variable
+# name, 100-column soft limit.
+BasedOnStyle: Google
+Language: Cpp
+IndentWidth: 4
+ColumnLimit: 100
+UseTab: Never
+BreakBeforeBraces: Attach
+PointerAlignment: Right
+ReferenceAlignment: Right
+AlignAfterOpenBracket: Align
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+SpaceBeforeParens: ControlStatements
+IndentCaseLabels: true
+SortIncludes: false

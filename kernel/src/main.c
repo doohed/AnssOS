@@ -13,7 +13,7 @@
 
 static void hcf(void) {
     for (;;) {
-        asm volatile ("cli; hlt");
+        asm volatile("cli; hlt");
     }
 }
 
@@ -39,15 +39,14 @@ void kmain(void) {
                 usable_bytes += e->length;
             }
         }
-        kprintf("Memory map: %lu entries, %lu KiB usable\n",
-                mm->entry_count, usable_bytes / 1024);
+        kprintf("Memory map: %lu entries, %lu KiB usable\n", mm->entry_count, usable_bytes / 1024);
     }
 
     if (framebuffer_request.response != NULL &&
         framebuffer_request.response->framebuffer_count > 0) {
         struct limine_framebuffer *fb = framebuffer_request.response->framebuffers[0];
-        kprintf("Boot framebuffer: %lux%lu @ %u bpp, pitch %lu\n",
-                fb->width, fb->height, fb->bpp, fb->pitch);
+        kprintf("Boot framebuffer: %lux%lu @ %u bpp, pitch %lu\n", fb->width, fb->height, fb->bpp,
+                fb->pitch);
     }
 
     if (rsdp_request.response != NULL) {
@@ -90,8 +89,8 @@ void kmain(void) {
     pci_enumerate();
     const struct pci_device *gpu = pci_find_device(0x1af4, 0x1050);
     if (gpu != NULL) {
-        kprintf("Found virtio-gpu-pci at %u:%u.%u (BAR0=0x%x)\n",
-                gpu->bus, gpu->slot, gpu->func, gpu->bar[0]);
+        kprintf("Found virtio-gpu-pci at %u:%u.%u (BAR0=0x%x)\n", gpu->bus, gpu->slot, gpu->func,
+                gpu->bar[0]);
     } else {
         kprintf("virtio-gpu-pci not found -- boot QEMU with -device virtio-gpu-pci\n");
     }
@@ -101,24 +100,30 @@ void kmain(void) {
     if (gpu != NULL && virtio_gpu_init(&fb) == 0) {
         kprintf("M4 complete.\n");
 
-        /* Paint a visible gradient directly through the driver -- proof */
-        /* this is virtio-gpu rendering, not the bootloader's boot */
-        /* framebuffer, since we never touch Limine's framebuffer_request */
-        /* pointer here. */
-        for (uint32_t y = 0; y < fb.height; y++) {
-            for (uint32_t x = 0; x < fb.width; x++) {
-                uint32_t r = (x * 255) / fb.width;
-                uint32_t g = (y * 255) / fb.height;
-                uint32_t b = 255 - r;
-                fb.pixels[y * fb.width + x] = (b << 16) | (g << 8) | r; /* BGRX8888 */
-            }
-        }
-        virtio_gpu_flush();
-
-        fbconsole_init(&fb);
+        fbconsole_init(
+            &fb); /* Clears the framebuffer to black -- do this before drawing anything. */
         kprintf_set_sink(fbconsole_kprintf_sink);
         fbconsole_write("AnssOS -- x86_64 / UEFI / Limine / virtio-gpu\n\n");
         kprintf("M5 complete: framebuffer console live via virtio-gpu.\n");
+
+        /* Paint a small gradient swatch in the bottom-right corner --
+         * proof of direct pixel writes through the driver (not just text),
+         * and that this is virtio-gpu rendering, not the bootloader's boot
+         * framebuffer, since we never touch Limine's framebuffer_request
+         * pointer here. Kept clear of the console's text region above. */
+        uint32_t swatch_w = fb.width / 6;
+        uint32_t swatch_h = fb.height / 6;
+        uint32_t ox = fb.width - swatch_w;
+        uint32_t oy = fb.height - swatch_h;
+        for (uint32_t y = 0; y < swatch_h; y++) {
+            for (uint32_t x = 0; x < swatch_w; x++) {
+                uint32_t r = (x * 255) / swatch_w;
+                uint32_t g = (y * 255) / swatch_h;
+                uint32_t b = 255 - r;
+                fb.pixels[(oy + y) * fb.width + (ox + x)] = (b << 16) | (g << 8) | r; /* BGRX8888 */
+            }
+        }
+        virtio_gpu_flush();
     } else {
         kprintf("Skipping M4/M5 (no virtio-gpu-pci device).\n");
     }
@@ -129,15 +134,14 @@ void kmain(void) {
     /* the compiler can't optimize away or reorder around the fault the */
     /* way it could with `1 / (volatile int)0` at -O2. Vector 0, #DE, no */
     /* error code. Never returns: isr_handler halts after dumping state. */
-    asm volatile (
+    asm volatile(
         "xor %%edx, %%edx\n"
         "mov $1, %%eax\n"
         "xor %%ecx, %%ecx\n"
         "div %%ecx\n"
         :
         :
-        : "eax", "ecx", "edx"
-    );
+        : "eax", "ecx", "edx");
 
     kprintf("unreachable if the #DE handler fired correctly.\n");
     hcf();

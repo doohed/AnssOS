@@ -25,7 +25,8 @@ void serial_putc(char c) {
     if (c == '\n') {
         serial_putc('\r');
     }
-    while (!serial_tx_empty()) { }
+    while (!serial_tx_empty()) {
+    }
     outb(COM1, (uint8_t)c);
 }
 

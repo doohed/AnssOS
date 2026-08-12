@@ -9,14 +9,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VIRTIO_GPU_CMD_GET_DISPLAY_INFO        0x0100
-#define VIRTIO_GPU_CMD_RESOURCE_CREATE_2D      0x0101
-#define VIRTIO_GPU_CMD_SET_SCANOUT             0x0103
-#define VIRTIO_GPU_CMD_RESOURCE_FLUSH          0x0104
-#define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D     0x0105
+#define VIRTIO_GPU_CMD_GET_DISPLAY_INFO 0x0100
+#define VIRTIO_GPU_CMD_RESOURCE_CREATE_2D 0x0101
+#define VIRTIO_GPU_CMD_SET_SCANOUT 0x0103
+#define VIRTIO_GPU_CMD_RESOURCE_FLUSH 0x0104
+#define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D 0x0105
 #define VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING 0x0106
 
-#define VIRTIO_GPU_RESP_OK_NODATA       0x1100
+#define VIRTIO_GPU_RESP_OK_NODATA 0x1100
 #define VIRTIO_GPU_RESP_OK_DISPLAY_INFO 0x1101
 
 #define VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM 2
@@ -24,9 +24,9 @@
 
 #define GPU_RESOURCE_ID 1
 
-#define FB_DEFAULT_WIDTH  1024
+#define FB_DEFAULT_WIDTH 1024
 #define FB_DEFAULT_HEIGHT 768
-#define FB_MAX_WIDTH  1920
+#define FB_MAX_WIDTH 1920
 #define FB_MAX_HEIGHT 1080
 
 struct __attribute__((packed)) virtio_gpu_ctrl_hdr {
@@ -126,8 +126,8 @@ static void gpu_cmd(const void *req, uint32_t req_len, void *resp, uint32_t resp
     memset(cmd_resp_virt, 0, resp_len);
 
     struct virtio_buffer bufs[2] = {
-        { .addr = cmd_req_virt, .len = req_len, .device_writable = 0 },
-        { .addr = cmd_resp_virt, .len = resp_len, .device_writable = 1 },
+        {.addr = cmd_req_virt, .len = req_len, .device_writable = 0},
+        {.addr = cmd_resp_virt, .len = resp_len, .device_writable = 1},
     };
     virtio_queue_submit_chain(&controlq, bufs, 2);
     virtio_queue_wait(&controlq);
@@ -159,14 +159,14 @@ static int get_display_info(uint32_t *out_width, uint32_t *out_height) {
 }
 
 int virtio_gpu_init(struct virtio_gpu_fb *out_fb) {
-    const struct pci_device *pci = pci_find_device(VIRTIO_GPU_PCI_VENDOR_ID, VIRTIO_GPU_PCI_DEVICE_ID);
+    const struct pci_device *pci =
+        pci_find_device(VIRTIO_GPU_PCI_VENDOR_ID, VIRTIO_GPU_PCI_DEVICE_ID);
     if (pci == NULL) {
         kprintf("virtio-gpu: device not found\n");
         return -1;
     }
 
-    if (virtio_pci_init(pci, &vdev) != 0 ||
-        virtio_negotiate_features(&vdev, 0) != 0 ||
+    if (virtio_pci_init(pci, &vdev) != 0 || virtio_negotiate_features(&vdev, 0) != 0 ||
         virtio_queue_init(&vdev, 0, &controlq) != 0) {
         return -1;
     }

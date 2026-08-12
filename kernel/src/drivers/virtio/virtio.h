@@ -14,13 +14,13 @@
 #define VIRTIO_F_VERSION_1 32 /* Feature bit; required to drive as "modern". */
 
 #define VIRTIO_STATUS_ACKNOWLEDGE 0x01
-#define VIRTIO_STATUS_DRIVER      0x02
-#define VIRTIO_STATUS_DRIVER_OK   0x04
+#define VIRTIO_STATUS_DRIVER 0x02
+#define VIRTIO_STATUS_DRIVER_OK 0x04
 #define VIRTIO_STATUS_FEATURES_OK 0x08
 #define VIRTIO_STATUS_NEEDS_RESET 0x40
-#define VIRTIO_STATUS_FAILED      0x80
+#define VIRTIO_STATUS_FAILED 0x80
 
-#define VIRTQ_DESC_F_NEXT  1
+#define VIRTQ_DESC_F_NEXT 1
 #define VIRTQ_DESC_F_WRITE 2
 
 struct __attribute__((packed)) virtq_desc {
@@ -108,7 +108,8 @@ struct virtio_buffer {
 
 /* Chains up to 8 buffers into one descriptor list, publishes it on the */
 /* avail ring, and kicks the device. */
-void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffer *buffers, int count);
+void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffer *buffers,
+                               int count);
 
 /* Polls until the device advances the used ring, reclaims the completed */
 /* chain's descriptors, and returns the byte length the device wrote. */

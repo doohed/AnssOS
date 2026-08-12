@@ -41,14 +41,38 @@ static void idt_set_gate(int vector, void *handler, uint8_t type_attr) {
 
 static const char *exception_name(uint64_t vector) {
     static const char *names[32] = {
-        "Divide-by-zero", "Debug", "NMI", "Breakpoint",
-        "Overflow", "Bound Range Exceeded", "Invalid Opcode", "Device Not Available",
-        "Double Fault", "Reserved", "Invalid TSS", "Segment Not Present",
-        "Stack-Segment Fault", "General Protection Fault", "Page Fault", "Reserved",
-        "x87 FPU Error", "Alignment Check", "Machine Check", "SIMD FP Exception",
-        "Virtualization Exception", "Control Protection Exception", "Reserved", "Reserved",
-        "Reserved", "Reserved", "Reserved", "Reserved",
-        "Hypervisor Injection", "VMM Communication", "Security Exception", "Reserved",
+        "Divide-by-zero",
+        "Debug",
+        "NMI",
+        "Breakpoint",
+        "Overflow",
+        "Bound Range Exceeded",
+        "Invalid Opcode",
+        "Device Not Available",
+        "Double Fault",
+        "Reserved",
+        "Invalid TSS",
+        "Segment Not Present",
+        "Stack-Segment Fault",
+        "General Protection Fault",
+        "Page Fault",
+        "Reserved",
+        "x87 FPU Error",
+        "Alignment Check",
+        "Machine Check",
+        "SIMD FP Exception",
+        "Virtualization Exception",
+        "Control Protection Exception",
+        "Reserved",
+        "Reserved",
+        "Reserved",
+        "Reserved",
+        "Reserved",
+        "Reserved",
+        "Hypervisor Injection",
+        "VMM Communication",
+        "Security Exception",
+        "Reserved",
     };
     return vector < 32 ? names[vector] : "Unknown";
 }
@@ -59,18 +83,18 @@ static const char *exception_name(uint64_t vector) {
 void isr_handler(struct interrupt_frame *frame) {
     kprintf("\n--- CPU EXCEPTION: %s (vector %lu, error 0x%lx) ---\n",
             exception_name(frame->vector), frame->vector, frame->error_code);
-    kprintf("rip=0x%lx cs=0x%lx rflags=0x%lx rsp=0x%lx ss=0x%lx\n",
-            frame->rip, frame->cs, frame->rflags, frame->rsp, frame->ss);
-    kprintf("rax=0x%lx rbx=0x%lx rcx=0x%lx rdx=0x%lx\n",
-            frame->rax, frame->rbx, frame->rcx, frame->rdx);
+    kprintf("rip=0x%lx cs=0x%lx rflags=0x%lx rsp=0x%lx ss=0x%lx\n", frame->rip, frame->cs,
+            frame->rflags, frame->rsp, frame->ss);
+    kprintf("rax=0x%lx rbx=0x%lx rcx=0x%lx rdx=0x%lx\n", frame->rax, frame->rbx, frame->rcx,
+            frame->rdx);
     kprintf("rsi=0x%lx rdi=0x%lx rbp=0x%lx\n", frame->rsi, frame->rdi, frame->rbp);
-    kprintf("r8=0x%lx r9=0x%lx r10=0x%lx r11=0x%lx\n",
-            frame->r8, frame->r9, frame->r10, frame->r11);
-    kprintf("r12=0x%lx r13=0x%lx r14=0x%lx r15=0x%lx\n",
-            frame->r12, frame->r13, frame->r14, frame->r15);
+    kprintf("r8=0x%lx r9=0x%lx r10=0x%lx r11=0x%lx\n", frame->r8, frame->r9, frame->r10,
+            frame->r11);
+    kprintf("r12=0x%lx r13=0x%lx r14=0x%lx r15=0x%lx\n", frame->r12, frame->r13, frame->r14,
+            frame->r15);
 
     for (;;) {
-        asm volatile ("cli; hlt");
+        asm volatile("cli; hlt");
     }
 }
 
@@ -82,5 +106,5 @@ void idt_init(void) {
 
     idtr_val.limit = sizeof(idt) - 1;
     idtr_val.base = (uint64_t)&idt;
-    asm volatile ("lidt (%0)" : : "r"(&idtr_val) : "memory");
+    asm volatile("lidt (%0)" : : "r"(&idtr_val) : "memory");
 }

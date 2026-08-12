@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Build (if needed) and boot AnssOS in QEMU over UEFI, using virtio-only
-# devices. Requires: nasm, qemu-system-x86, ovmf, xorriso, mtools
-#   sudo apt-get install -y nasm qemu-system-x86 ovmf xorriso mtools
+# Boots AnssOS.iso in QEMU over UEFI, virtio-gpu as the only display
+# device. Does NOT build the ISO -- run scripts/build-iso.sh (or `make`)
+# first.
+#
+# Requires: qemu-system-x86_64, OVMF firmware.
+#   sudo apt-get install -y qemu-system-x86 ovmf
 set -euo pipefail
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 ISO="AnssOS.iso"
-if [ ! -f "$ISO" ] || [ kernel/GNUmakefile -nt "$ISO" ]; then
-    make
+if [ ! -f "$ISO" ]; then
+    echo "error: $ISO not found -- run ./scripts/build-iso.sh (or \`make\`) first" >&2
+    exit 1
 fi
 
 find_ovmf_combined() {
@@ -55,6 +59,7 @@ exec qemu-system-x86_64 \
     -M q35 \
     -m 256M \
     -no-reboot -no-shutdown \
+    -vga none \
     "${fw_args[@]}" \
     -cdrom "$ISO" \
     -device virtio-gpu-pci \
