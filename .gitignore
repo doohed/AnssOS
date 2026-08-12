@@ -1,0 +1,13 @@
+# Kernel build output
+kernel/bin/
+kernel/src/**/*.o
+kernel/src/**/*.d
+
+# Root build output
+/*.iso
+/*.hdd
+/iso_root/
+/OVMF_VARS.local.fd
+
+# Agents config
+.claude/
