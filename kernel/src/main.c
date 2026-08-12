@@ -3,6 +3,7 @@
 #include "boot/limine.h"
 #include "boot/requests.h"
 #include "console/fbconsole.h"
+#include "console/splash.h"
 #include "drivers/pci.h"
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_gpu.h"
@@ -100,8 +101,14 @@ void kmain(void) {
     if (gpu != NULL && virtio_gpu_init(&fb) == 0) {
         kprintf("M4 complete.\n");
 
-        fbconsole_init(
-            &fb); /* Clears the framebuffer to black -- do this before drawing anything. */
+        /* fbconsole_init() must run first -- it's what sets fbconsole.c's
+         * internal framebuffer pointer, which splash_show() relies on via
+         * fbconsole_draw_text_at(). It also clears the screen to black,
+         * which doubles as the splash's blank backdrop. */
+        fbconsole_init(&fb);
+        splash_show(&fb);  /* Logo + looping "..." while the rest of boot logs to serial. */
+        fbconsole_clear(); /* Wipe the splash before the scrolling log console takes over. */
+
         kprintf_set_sink(fbconsole_kprintf_sink);
         fbconsole_write("AnssOS -- x86_64 / UEFI / Limine / virtio-gpu\n\n");
         kprintf("M5 complete: framebuffer console live via virtio-gpu.\n");

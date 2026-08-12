@@ -63,6 +63,7 @@ AnssOS/
         ├── drivers/virtio/virtio.{c,h}      # virtio-pci transport + virtqueues
         ├── drivers/virtio/virtio_gpu.{c,h}  # virtio-gpu 2D driver
         ├── console/fbconsole.{c,h}   # bitmap-font text console over the gpu framebuffer
+        ├── console/splash.{c,h}      # boot splash: centered logo + looping "..." indicator
         ├── console/font8x8_basic.h   # vendored public-domain 8x8 font (dhepper/font8x8)
         └── lib/string.{c,h}          # freestanding mem*/str* functions
 ```
@@ -133,7 +134,10 @@ virtio-gpu queue.
       writes go through the driver (not Limine's boot-services
       framebuffer, which is never touched), and a small bitmap-font text
       console (`font8x8_basic`, public domain) sits on top and mirrors
-      everything `kprintf` logs.
+      everything `kprintf` logs. `console/splash.c` shows a Fedora/
+      Windows-style boot splash first (centered ASCII logo, looping
+      `.`/`..`/`...` indicator) before the console takes over — pacing is
+      a plain busy-wait spin, since there's no timer interrupt yet.
 
 **Explicitly out of scope for now:** IRQ/MSI-X-driven virtio (everything
 above polls), per-process address spaces / demand paging, virtio-blk,

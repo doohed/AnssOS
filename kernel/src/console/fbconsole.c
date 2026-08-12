@@ -82,6 +82,14 @@ void fbconsole_putc(char c) {
     }
 }
 
+void fbconsole_draw_text_at(uint32_t col, uint32_t row, const char *s) {
+    while (*s) {
+        draw_glyph(col, row, *s);
+        col++;
+        s++;
+    }
+}
+
 void fbconsole_write(const char *s) {
     while (*s) {
         fbconsole_putc(*s++);

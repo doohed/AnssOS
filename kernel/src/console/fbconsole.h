@@ -12,6 +12,13 @@ void fbconsole_clear(void);
 void fbconsole_putc(char c);
 void fbconsole_write(const char *s);
 
+/* Draws text at an arbitrary cell position without touching the scrolling
+ * cursor -- used by console/splash.c to place a centered logo/animation
+ * outside the normal line-by-line log flow. Does not flush to the host
+ * display; call virtio_gpu_flush() when ready. fbconsole_init() must have
+ * already run. */
+void fbconsole_draw_text_at(uint32_t col, uint32_t row, const char *s);
+
 /* Suitable for kprintf_set_sink() (see drivers/serial.h): draws the byte */
 /* and flushes to the host display on every newline, so log lines appear */
 /* live instead of only once a whole message is buffered. */
