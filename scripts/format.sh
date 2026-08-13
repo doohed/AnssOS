@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Applies (or checks) the project's code style -- see .clang-format at the
-# repo root -- across every kernel .c/.h file. (clang-format doesn't
-# understand GAS assembly, so isr.S etc. are left alone.)
+# repo root -- across every kernel and userland .c/.h file. (clang-format
+# doesn't understand GAS assembly, so isr.S etc. are left alone.)
 #
 # Usage:
 #   ./scripts/format.sh          # reformat in place
@@ -22,7 +22,7 @@ fi
 # font8x8_basic.h and boot/limine.h are vendored as-is from upstream (see
 # their own header comments) -- never reformat vendored code.
 mapfile -t FILES < <(
-    find kernel/src -type f \( -name '*.c' -o -name '*.h' \) \
+    find kernel/src userland -type f \( -name '*.c' -o -name '*.h' \) \
         -not -name 'font8x8_basic.h' \
         -not -name 'limine.h' \
         | LC_ALL=C sort

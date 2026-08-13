@@ -1,6 +1,5 @@
 #include "elf.h"
 #include "../arch/x86_64/usermode.h"
-#include "../boot/requests.h"
 #include "../drivers/serial.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
@@ -51,11 +50,9 @@ struct __attribute__((packed)) elf64_phdr {
 #define USER_STACK_PAGES 4 /* 16 KiB */
 #define KERNEL_STACK_SIZE (16 * 1024)
 
-static inline void *phys_to_kernel_virt(uint64_t phys) {
-    return (void *)(uintptr_t)(phys + hhdm_request.response->offset);
-}
-
 int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
+    memset(out, 0, sizeof(*out)); /* open_files[].vnode == NULL (free) for every slot. */
+
     if (image_size < sizeof(struct elf64_ehdr)) {
         kprintf("elf: file too small to be an ELF header\n");
         return -1;
@@ -82,6 +79,7 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
 
     struct addr_space as = vmm_new_address_space();
     const struct elf64_phdr *phdrs = (const struct elf64_phdr *)(image + eh->e_phoff);
+    uint64_t heap_base = 0; /* Highest PT_LOAD segment's mapped end -- see below. */
 
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         const struct elf64_phdr *ph = &phdrs[i];
@@ -104,13 +102,18 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
             return -1;
         }
 
-        uint8_t *seg_kernel_virt = phys_to_kernel_virt(base_phys);
+        uint8_t *seg_kernel_virt = vmm_phys_to_virt(base_phys);
         memset(seg_kernel_virt, 0, page_count * PMM_PAGE_SIZE);
         memcpy(seg_kernel_virt + seg_offset, image + ph->p_offset, ph->p_filesz);
 
         for (uint64_t p = 0; p < page_count; p++) {
             vmm_map(&as, seg_start + p * PMM_PAGE_SIZE, base_phys + p * PMM_PAGE_SIZE,
                     PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+        }
+
+        uint64_t seg_mapped_end = seg_start + page_count * PMM_PAGE_SIZE;
+        if (seg_mapped_end > heap_base) {
+            heap_base = seg_mapped_end;
         }
     }
 
@@ -119,7 +122,7 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
         kprintf("elf: out of memory for the user stack\n");
         return -1;
     }
-    memset(phys_to_kernel_virt(user_stack_phys), 0, USER_STACK_PAGES * PMM_PAGE_SIZE);
+    memset(vmm_phys_to_virt(user_stack_phys), 0, USER_STACK_PAGES * PMM_PAGE_SIZE);
     uint64_t user_stack_base = USER_STACK_TOP - USER_STACK_PAGES * PMM_PAGE_SIZE;
     for (uint64_t p = 0; p < USER_STACK_PAGES; p++) {
         vmm_map(&as, user_stack_base + p * PMM_PAGE_SIZE, user_stack_phys + p * PMM_PAGE_SIZE,
@@ -137,9 +140,15 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
         return -1;
     }
 
+    if (heap_base == 0) {
+        heap_base = 0x600000; /* No PT_LOAD segments (degenerate) -- a safe fallback. */
+    }
+
     out->entry = eh->e_entry;
     out->user_stack_top = USER_STACK_TOP;
     out->kernel_stack_top = (uint64_t)(uintptr_t)(kernel_stack + KERNEL_STACK_SIZE);
     out->as = as;
+    out->heap_start = heap_base;
+    out->heap_end = heap_base; /* Zero-size until the first brk(). */
     return 0;
 }

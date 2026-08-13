@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Builds the tiny hand-rolled userland test payloads (hello, crash) used
-# to prove M10's ring-3 pipeline end-to-end, and drops their built ELF
-# binaries where kernel/src/exec/userland_blobs.S expects to find them
-# (via .incbin) so they get embedded directly into the kernel image --
-# see main.c's M10 self-test wiring for how they land on the VFS at boot.
+# Builds the tiny hand-rolled userland test payloads (hello, crash,
+# malloctest, filetest) used to prove the ring-3 pipeline end-to-end, and
+# drops their built ELF binaries where kernel/src/exec/userland_blobs.S
+# expects to find them (via .incbin) so they get embedded directly into
+# the kernel image -- see main.c's self-test wiring for how they land on
+# the VFS at boot.
 #
 # This is a genuinely separate build (its own toolchain flags, its own
 # linker script) from the kernel itself -- these are ring-3 userland
@@ -14,15 +15,19 @@ cd "$(dirname "$0")/.."
 
 CC=cc
 LD=ld
-CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie -m64
-    -march=x86-64 -mabi=sysv -mno-80387 -mno-mmx -mno-sse -mno-sse2 -mno-red-zone)
-LDFLAGS=(-m elf_x86_64 -nostdlib -static -T userland/link.ld)
+CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie
+    -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv -mno-80387 -mno-mmx
+    -mno-sse -mno-sse2 -mno-red-zone)
+LDFLAGS=(-m elf_x86_64 -nostdlib -static --gc-sections -T userland/link.ld)
+
+# The libc every program links against -- see userland/libc.h.
+LIBC_SRCS=(crt0.S syscalls.c libc/string.c libc/malloc.c libc/stdio.c)
 
 build_program() {
     local name="$1"
     shift
     local objs=()
-    for src in "$@"; do
+    for src in "${LIBC_SRCS[@]}" "$@"; do
         local obj="userland/${src%.*}.o"
         "$CC" "${CFLAGS[@]}" -c "userland/$src" -o "$obj"
         objs+=("$obj")
@@ -31,7 +36,9 @@ build_program() {
     cp "userland/${name}.elf" "kernel/src/exec/${name}.elf.bin"
 }
 
-build_program hello crt0.S syscalls.c hello.c
-build_program crash crt0.S syscalls.c crash.c
+build_program hello hello.c
+build_program crash crash.c
+build_program malloctest malloctest.c
+build_program filetest filetest.c
 
-echo "Built userland/hello.elf and userland/crash.elf"
+echo "Built userland/{hello,crash,malloctest,filetest}.elf"

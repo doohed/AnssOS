@@ -80,6 +80,10 @@ void vmm_switch(struct addr_space *as) {
     asm volatile("mov %0, %%cr3" : : "r"(as->pml4_phys) : "memory");
 }
 
+void *vmm_phys_to_virt(uint64_t phys) {
+    return table_virt(phys);
+}
+
 volatile void *vmm_map_mmio(uint64_t phys_addr, uint64_t size) {
     uint64_t page_phys = phys_addr & ~(uint64_t)(PMM_PAGE_SIZE - 1);
     uint64_t page_offset = phys_addr - page_phys;

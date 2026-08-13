@@ -49,6 +49,14 @@ void vmm_map(struct addr_space *as, uint64_t virt, uint64_t phys, uint64_t flags
 /* Loads `as` into CR3, making it the active address space. */
 void vmm_switch(struct addr_space *as);
 
+/* Translates a physical address to its HHDM-mapped kernel virtual
+ * address -- the same "identity map plus offset" pmm.c/heap.c already
+ * use internally to touch freshly allocated pages. Exposed for callers
+ * (exec/elf.c, exec/syscall.c) that need to write into memory obtained
+ * from pmm_alloc_page()/pmm_alloc_pages() before/instead of mapping it
+ * into a user address space via vmm_map(). */
+void *vmm_phys_to_virt(uint64_t phys);
+
 /* Maps `size` bytes of physical memory starting at `phys_addr` (need not
  * be page-aligned) into the kernel's own (currently active) address
  * space as present + writable + uncacheable. Returns a virtual pointer

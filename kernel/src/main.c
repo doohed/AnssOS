@@ -202,18 +202,25 @@ void kmain(void) {
                 "Boot QEMU with -device virtio-blk-pci for persistence.\n");
         }
 
-        /* M10 self-test fixtures: the hand-rolled userland test payloads
-         * (see userland/, embedded into the kernel image via
+        /* M10/M11 self-test fixtures: the hand-rolled userland test
+         * payloads (see userland/, embedded into the kernel image via
          * exec/userland_blobs.S) get written fresh onto the in-memory VFS
-         * on every boot, so `run hello.bin` / `run crash.bin` always have
-         * something to load without any host-side provisioning step --
-         * same idea as the PMM/VMM self-tests above, just landing on the
-         * filesystem instead of just printing a result. Not persisted to
-         * disk; there's nothing to save here. */
+         * on every boot, so `run <name>.bin` always has something to load
+         * without any host-side provisioning step -- same idea as the
+         * PMM/VMM self-tests above, just landing on the filesystem
+         * instead of just printing a result. Not persisted to disk;
+         * there's nothing to save here. filetest.txt is filetest.bin's
+         * own fixture -- a known file for it to open/read/write/lseek
+         * against. */
         vfs_write_bytes(vfs_root(), "hello.bin", hello_elf_start,
                         (size_t)(hello_elf_end - hello_elf_start));
         vfs_write_bytes(vfs_root(), "crash.bin", crash_elf_start,
                         (size_t)(crash_elf_end - crash_elf_start));
+        vfs_write_bytes(vfs_root(), "malloctest.bin", malloctest_elf_start,
+                        (size_t)(malloctest_elf_end - malloctest_elf_start));
+        vfs_write_bytes(vfs_root(), "filetest.bin", filetest_elf_start,
+                        (size_t)(filetest_elf_end - filetest_elf_start));
+        vfs_write_file(vfs_root(), "filetest.txt", "hello file test\n", 0);
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

@@ -1,8 +1,8 @@
-/* Embeds the built hello/crash userland test payloads (see
- * scripts/build-userland.sh, which drops their built ELF bytes at
- * hello.elf.bin/crash.elf.bin right next to this file before the kernel
- * itself is built) directly into the kernel image, so the M10 self-test
- * in main.c can write them onto the VFS without any separate host-side
+/* Embeds the built hello/crash/malloctest/filetest userland test
+ * payloads (see scripts/build-userland.sh, which drops their built ELF
+ * bytes at <name>.elf.bin right next to this file before the kernel
+ * itself is built) directly into the kernel image, so main.c's self-test
+ * wiring can write them onto the VFS without any separate host-side
  * provisioning step. */
 
 .section .rodata
@@ -18,5 +18,17 @@ hello_elf_end:
 crash_elf_start:
 .incbin "src/exec/crash.elf.bin"
 crash_elf_end:
+
+.global malloctest_elf_start
+.global malloctest_elf_end
+malloctest_elf_start:
+.incbin "src/exec/malloctest.elf.bin"
+malloctest_elf_end:
+
+.global filetest_elf_start
+.global filetest_elf_end
+filetest_elf_start:
+.incbin "src/exec/filetest.elf.bin"
+filetest_elf_end:
 
 .section .note.GNU-stack,"",@progbits

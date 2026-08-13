@@ -87,7 +87,7 @@ Building and running are two separate scripts (`make`/`make run` are thin
 wrappers around them, if you'd rather not call them directly):
 
 ```sh
-./scripts/build-iso.sh   # build the M10 userland test payloads, kernel/bin/kernel, and assemble AnssOS.iso
+./scripts/build-iso.sh   # build the userland test payloads, kernel/bin/kernel, and assemble AnssOS.iso
 ./scripts/run-qemu.sh    # boot the already-built ISO (UEFI/OVMF, virtio-gpu-pci, serial on stdout)
 ```
 
@@ -300,6 +300,51 @@ virtio-gpu queue.
       is what actually revealed `RAX`/`RDI` held plausible values while
       `struct interrupt_frame`'s fields didn't reflect them.
 
+- [x] **M11 — a real userland libc.** M10 proved ring-3 execution but
+      the only thing that could run was a hand-written `crt0.S` + a
+      3-function stub — no dynamic memory, no `printf`, no way to touch a
+      real file beyond fd 0/1/2. A genuine `musl` port isn't realistic
+      yet (it expects a fully Linux-compatible syscall surface — real
+      `mmap`, `clone`, `futex`, `arch_prctl` for TLS — and a TLS ABI
+      AnssOS has none of), so this milestone is a small, from-scratch
+      libc instead: enough for a hand-written C program to allocate
+      memory, format output, and read/write a real VFS file.
+      `struct usertask` (`arch/x86_64/usermode.h`) gained a brk-managed
+      heap range (`heap_start`/`heap_end`) and a small fixed-size open-
+      file table (`MAX_OPEN_FILES=8`), plus a `usermode_current_task()`
+      accessor so `exec/syscall.c` can reach the running task's state —
+      previously nothing did, since M10 never needed mutable per-task
+      state beyond what it took to launch a task once.
+      Four new syscalls, all Linux-numbered like M10's original three:
+      `brk` (grows the heap a page at a time via `pmm_alloc_page()` +
+      `vmm_map()`, capped at 4 MiB, never shrinks — same "no giving
+      memory back" pragmatism as `mm/heap.c`'s own `kmalloc`/`kfree`),
+      and `open`/`close`/`lseek` (`O_RDONLY`/`O_WRONLY` only, no
+      `O_CREAT` — a task can only work with files that already exist).
+      `read`/`write` gained an `fd >= 3` path through the new file table,
+      writing straight into `vnode->data` (growing it via a fresh
+      `kmalloc`+`memcpy`+`kfree` when a write extends past the current
+      end — the same operation `fs/vfs.c`'s own `vfs_write_bytes()` does
+      for a whole-file overwrite, just done here directly since this
+      needs to write at an arbitrary offset, matching `fs/blkfs.c`'s
+      existing precedent of touching vnode fields directly).
+      The libc itself lives in `userland/libc/` (`string.c`, `stdio.c`,
+      `malloc.c`) plus `userland/syscalls.c` (raw `int 0x80` wrappers)
+      behind a shared `userland/libc.h`. `malloc()`/`free()` is a
+      from-scratch free-list allocator *deliberately mirroring*
+      `mm/heap.c`'s own design (first-fit, forward-only coalescing,
+      grows on demand — here via `brk()` instead of `pmm_alloc_pages()`)
+      rather than reusing its code, since userland can't call kernel
+      functions. `printf()` re-implements `kprintf`'s exact minimal
+      format-spec support over `write(1, ...)`. Two new self-test
+      payloads prove it: `malloctest.bin` (several `malloc()`s of
+      different sizes, a pattern-fill/verify pass, a `free()`+reuse
+      check) and `filetest.bin` (`open`/`read`/`printf`s a real VFS
+      fixture file, then `lseek`s and `write`s to patch and extend it —
+      verified by `cat`ing the file from the shell before and after and
+      confirming the *shell* sees the change the ring-3 task made,
+      proving the syscall reaches the real VFS, not a copy).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above — everything still polls), APIC/IOAPIC beyond the minimal
@@ -307,11 +352,13 @@ LINT0 passthrough above (no I/O APIC redirection table use, no SMP), a
 real on-disk filesystem format (ext2/FAT/UFS — M9's format above is a
 whole-tree dump, not an incremental one), `fork()`/multiple concurrent
 processes, any preemptive scheduling, dynamic linking/shared libraries,
-W^X/NX enforcement, the `SYSCALL`/`SYSRET` MSR fast path (`int 0x80`
-only for now), signals, and a real libc port (musl or similar) usable
-for arbitrary third-party source — M10's hand-written 3-function stub
-above is just enough to prove the pipeline, not something to build real
-programs against yet. These are natural next milestones from here.
+TLS, W^X/NX enforcement, the `SYSCALL`/`SYSRET` MSR fast path (`int
+0x80` only for now), signals, `O_CREAT`/directory creation from
+userland, a per-task working directory, and an actual musl (or similar)
+port capable of building arbitrary third-party C source — M11's libc is
+still hand-written and intentionally small, proving the pattern rather
+than being generally reusable yet. These are natural next milestones
+from here.
 
 ## Using the shell interactively
 
