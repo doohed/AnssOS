@@ -2,6 +2,7 @@
 #include "../arch/x86_64/io.h"
 #include "../console/fbconsole.h"
 #include "../drivers/pci.h"
+#include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "../drivers/virtio/virtio_input.h"
 #include "../fs/vfs.h"
@@ -30,6 +31,7 @@ static void cmd_clear(const char *args);
 static void cmd_uname(const char *args);
 static void cmd_meminfo(const char *args);
 static void cmd_lspci(const char *args);
+static void cmd_uptime(const char *args);
 static void cmd_crash(const char *args);
 static void cmd_reboot(const char *args);
 static void cmd_halt(const char *args);
@@ -50,6 +52,7 @@ static const struct builtin BUILTINS[] = {
     {"uname", "print kernel/arch info", cmd_uname},
     {"meminfo", "print physical memory allocator stats", cmd_meminfo},
     {"lspci", "list PCI devices found at boot", cmd_lspci},
+    {"uptime", "print time elapsed since interrupts were enabled", cmd_uptime},
     {"crash", "deliberately trigger a #DE to test exception handling", cmd_crash},
     {"reboot", "reset the machine", cmd_reboot},
     {"halt", "halt the CPU forever", cmd_halt},
@@ -72,24 +75,35 @@ static char lower_char(char c) {
     return c;
 }
 
-/* Blocks (polling virtio_input_poll_char()) until Enter, echoing each
- * character as it's typed. Backspace erases the last character both on
- * the framebuffer console (fbconsole_putc('\b'), see console/fbconsole.c)
- * and, via "\b \b", on a real serial terminal watching -serial stdio. */
+/* Blocks until Enter, polling two independent input sources each
+ * iteration: virtio_input_poll_char() (needs a real graphical window
+ * with keyboard focus -- nothing in a headless/-display-none setup) and
+ * serial_poll_char() (whatever's typed into the host terminal via
+ * `-serial stdio`, a real serial console and the one that actually works
+ * headless). Whichever has a byte ready wins. Recognizes both the
+ * translated codes virtio_input.c produces ('\n' for Enter, '\b' for
+ * Backspace) and the raw bytes a serial terminal in raw mode commonly
+ * sends instead ('\r' for Enter, DEL/0x7F for Backspace). Echoes each
+ * character as typed; backspace erases the last one both on the
+ * framebuffer console (fbconsole_putc('\b')) and, via "\b \b", on the
+ * serial terminal. */
 static void read_line(char *buf, size_t max_len) {
     size_t len = 0;
     for (;;) {
         int c = virtio_input_poll_char();
         if (c < 0) {
+            c = serial_poll_char();
+        }
+        if (c < 0) {
             asm volatile("pause");
             continue;
         }
 
-        if (c == '\n') {
+        if (c == '\n' || c == '\r') {
             kprintf("\n");
             break;
         }
-        if (c == '\b') {
+        if (c == '\b' || c == 0x7F) {
             if (len > 0) {
                 len--;
                 kprintf("\b \b");
@@ -210,6 +224,15 @@ static void cmd_meminfo(const char *args) {
 static void cmd_lspci(const char *args) {
     (void)args;
     pci_print_devices();
+}
+
+static void cmd_uptime(const char *args) {
+    (void)args;
+    /* kprintf has no field-width support (see drivers/serial.h), so this
+     * skips trying to zero-pad a "seconds.milliseconds" split and just
+     * reports both plainly. */
+    uint64_t ms = pit_uptime_ms();
+    kprintf("%lus (%lu ms, %lu ticks @ %u Hz)\n", ms / 1000, ms, pit_ticks(), (uint32_t)PIT_HZ);
 }
 
 static void cmd_crash(const char *args) {

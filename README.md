@@ -55,11 +55,13 @@ AnssOS/
         ├── boot/requests.{c,h}       # Limine boot requests (hhdm, memmap, ...)
         ├── arch/x86_64/io.h          # port I/O (in/out b/w/l)
         ├── arch/x86_64/gdt.{c,h}     # 64-bit GDT + TSS
-        ├── arch/x86_64/idt.{c,h}     # IDT + exception dispatch (isr.S has the stubs)
+        ├── arch/x86_64/idt.{c,h}     # IDT + exception/IRQ dispatch (isr.S/irq.S have the stubs)
+        ├── arch/x86_64/pic.{c,h}     # 8259 remap + Local APIC LINT0/ExtINT passthrough
         ├── mm/pmm.{c,h}              # bitmap physical page allocator
         ├── mm/vmm.{c,h}              # minimal page-table mapper, MMIO only
         ├── mm/heap.{c,h}             # kmalloc/kfree, first-fit over the PMM
         ├── drivers/serial.{c,h}      # COM1 driver + kprintf
+        ├── drivers/pit.{c,h}         # PIT timer: ticks/uptime/sleep_ms
         ├── drivers/pci.{c,h}         # legacy config-space PCI enumeration
         ├── drivers/virtio/virtio.{c,h}      # virtio-pci transport + virtqueues
         ├── drivers/virtio/virtio_gpu.{c,h}  # virtio-gpu 2D driver
@@ -140,8 +142,9 @@ virtio-gpu queue.
       console (`font8x8_basic`, public domain) sits on top and mirrors
       everything `kprintf` logs. `console/splash.c` shows a Fedora/
       Windows-style boot splash first (centered ASCII logo, looping
-      `.`/`..`/`...` indicator) before the console takes over — pacing is
-      a plain busy-wait spin, since there's no timer interrupt yet.
+      `.`/`..`/`...` indicator) before the console takes over — paced with
+      `pit_sleep_ms()` (see M8) as of that milestone, a plain busy-wait
+      spin before it.
 - [x] **M6 — virtio-input keyboard + interactive shell.** QEMU exposes
       keyboard/mouse/tablet under the identical PCI id, so
       `virtio_input_init()` walks every match (`pci_find_device_nth()`)
@@ -154,6 +157,12 @@ virtio-gpu queue.
       builtin is the `#DE` self-test that used to run automatically at
       the end of boot — now on demand, since the exception handler halts
       forever and we want an interactive prompt afterward instead.
+      `read_line()` also polls `serial_poll_char()` (`drivers/serial.c`)
+      alongside virtio-input, so the shell works as a real serial console
+      too — added after virtio-input alone turned out to need a
+      graphical window with keyboard focus to receive anything at all,
+      which a headless `-display none` run (this repo's default) simply
+      doesn't have. See "Using the shell interactively" below.
 - [x] **M7 — In-memory filesystem + directory/file management.** Two new
       pieces underneath the shell: `mm/heap.c` (`kmalloc`/`kfree`, a
       first-fit allocator carving variable-sized blocks out of pages from
@@ -174,28 +183,86 @@ virtio-gpu queue.
       shell's `cwd` pointer would otherwise dangle) — verified by trying
       to delete `.`, `..`, and an absolute ancestor path while `cwd` sat
       inside the target, all correctly refused.
+- [x] **M8 — Hardware interrupts + a PIT timer.** Everything before this
+      milestone polled; there was no clock, no `sleep()`, nothing a future
+      scheduler could tick against. `arch/x86_64/pic.c` remaps the 8259
+      pair (IRQ0-15 -> vectors 32-47, clear of the CPU exception range),
+      `arch/x86_64/irq.S` + `idt.c` add a generic 16-line IRQ dispatch
+      (`irq_register()`) alongside the existing exception handlers, and
+      `drivers/pit.c` programs channel 0 for a 100 Hz tick
+      (`pit_ticks()`/`pit_uptime_ms()`/`pit_sleep_ms()`, the last now
+      pacing the M5 splash instead of a guessed spin count; new `uptime`
+      shell builtin).
+      **The actual discovery this milestone was about:** a fully-correct
+      PIC remap + PIT program + unmask + `sti` still left every timer
+      interrupt permanently stuck pending in the 8259's IRR, never
+      delivered — confirmed via QEMU's `info pic` (`irr=01`, `isr=00`,
+      CPU confirmed halted with IF=1). On chipsets that default to
+      APIC-only routing (QEMU's q35 included), the legacy PIC's INTR line
+      only reaches the CPU if the Local APIC's LINT0 pin is explicitly
+      configured for ExtINT delivery and unmasked, and the LAPIC itself
+      software-enabled via its Spurious Interrupt Vector Register — none
+      of which firmware guarantees once it's done with its own boot phase.
+      `pic_remap()` now also does this (`lapic_enable_extint_passthrough()`
+      in `pic.c`), which is why it has to run after `pmm_init()` (it maps
+      the LAPIC's MMIO page via `vmm_map_mmio()`) rather than right after
+      `idt_init()` like the rest of CPU bring-up. Also caught while wiring
+      up the `uptime` command: `kprintf` has no field-width support
+      (`%03lu` silently consumed zero arguments instead of erroring,
+      desyncing every `va_arg` read after it in that call) — its own doc
+      comment already said so, but it's a sharp edge worth remembering.
 
-**Explicitly out of scope for now:** IRQ/MSI-X-driven virtio (everything
-above polls), per-process address spaces / demand paging, a `virtio-blk`
-driver + on-disk filesystem format (persistence — the in-memory
-filesystem above resets every boot), a scheduler, and userspace. These
-are natural next milestones from here.
+**Explicitly out of scope for now:** making virtio interrupt-driven
+(their PCI interrupt routing is a separate concern from the ISA IRQ0-15
+path above — everything still polls), APIC/IOAPIC beyond the minimal
+LINT0 passthrough above (no I/O APIC redirection table use, no SMP),
+per-process address spaces / demand paging, a `virtio-blk` driver +
+on-disk filesystem format (persistence — the in-memory filesystem above
+resets every boot), a scheduler, and userspace. These are natural next
+milestones from here.
 
-## Testing keyboard input headlessly
+## Using the shell interactively
 
-QEMU's HMP `sendkey` monitor command does **not** reach
+`./scripts/run-qemu.sh` defaults to `-display none` (no graphical window
+at all — `virtio-gpu`/`virtio-keyboard` still work, there's just nothing
+on screen and no keyboard focus to give them). That's deliberate: the
+shell doubles as a real **serial console**. `drivers/serial.c`'s
+`serial_poll_char()` reads bytes straight off COM1, and
+`shell/shell.c`'s `read_line()` polls it alongside
+`virtio_input_poll_char()` — whichever has a byte ready wins. Since
+`run-qemu.sh` passes `-serial stdio`, that means **typing directly into
+the terminal you ran the script from talks to the shell**, no graphical
+window, VNC, or anything else required. This is the normal way to use
+AnssOS in this repo.
+
+If you do want a graphical window instead (to exercise the
+virtio-gpu/virtio-input path specifically, e.g. while working on those
+drivers), add a real display backend yourself, e.g.
+`./scripts/run-qemu.sh -display gtk` (or `sdl`) — click into that window
+for keyboard focus; the terminal you launched it from goes back to being
+just the serial log in that case.
+
+## Testing keyboard input headlessly (scripted, non-interactive)
+
+For driving the shell from a script without occupying a terminal (as
+opposed to a person just typing, which the serial console above already
+covers): QEMU's HMP `sendkey` monitor command does **not** reach
 `virtio-keyboard-pci` in this setup — it targets the legacy PS/2 keyboard
 that q35's i8042 controller provides by default (`info qtree` shows both
 `ps2-kbd` and `virtio-keyboard-pci` present simultaneously), and AnssOS has
-no PS/2 driver on purpose (virtio-only). To drive the shell from a script,
-use QMP's `input-send-event` instead, with `device` set to the **display**
-device's id (not the keyboard's — that crashes this QEMU build), e.g.
+no PS/2 driver on purpose (virtio-only). Use QMP's `input-send-event`
+instead, with `device` set to the **display** device's id (not the
+keyboard's — that crashes this QEMU build), e.g.
 `-device virtio-gpu-pci,id=gpu0` and `{"execute": "input-send-event",
 "arguments": {"device": "gpu0", "events": [...]}}` for each key down/up.
+(Simplest of all for scripting, though: just write to the QEMU process's
+stdin like a person would type, since `-serial stdio` is listening —
+no QMP needed if the serial console path above is good enough for what
+you're testing.)
 
-One more gotcha: punctuation keys use QEMU's `QKeyCode` names, not the
-literal character -- `.` is `"dot"`, `/` is `"slash"`, `,` is `"comma"`,
-etc. Sending the raw character for these silently fails (check the JSON
-response for an `"error"` key; it's easy to miss otherwise) and the
-keystroke is just dropped, which reads exactly like a kernel bug until
-you notice `main.c` arrived as `mainc`.
+One more gotcha specific to the QMP/virtio-input path: punctuation keys
+use QEMU's `QKeyCode` names, not the literal character -- `.` is `"dot"`,
+`/` is `"slash"`, `,` is `"comma"`, etc. Sending the raw character for
+these silently fails (check the JSON response for an `"error"` key; it's
+easy to miss otherwise) and the keystroke is just dropped, which reads
+exactly like a kernel bug until you notice `main.c` arrived as `mainc`.

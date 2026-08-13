@@ -21,6 +21,17 @@ static int serial_tx_empty(void) {
     return inb(COM1 + 5) & 0x20;
 }
 
+static int serial_rx_ready(void) {
+    return inb(COM1 + 5) & 0x01; /* Line Status Register bit 0: Data Ready. */
+}
+
+int serial_poll_char(void) {
+    if (!serial_rx_ready()) {
+        return -1;
+    }
+    return inb(COM1);
+}
+
 void serial_putc(char c) {
     if (c == '\n') {
         serial_putc('\r');

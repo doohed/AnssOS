@@ -1,6 +1,8 @@
 #include "idt.h"
+#include "pic.h"
 #include "../../drivers/serial.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define IDT_ENTRIES 256
@@ -25,8 +27,12 @@ static struct idt_entry idt[IDT_ENTRIES];
 static struct idtr idtr_val;
 
 /* isr_stub_table[0..31]: one small asm trampoline per CPU exception vector, */
-/* defined in isr.S. */
+/* defined in isr.S. irq_stub_table[0..15]: same idea for hardware IRQs */
+/* (vectors 32-47), defined in irq.S. */
 extern void *isr_stub_table[32];
+extern void *irq_stub_table[16];
+
+static void (*irq_handlers[16])(void);
 
 static void idt_set_gate(int vector, void *handler, uint8_t type_attr) {
     uint64_t addr = (uint64_t)handler;
@@ -98,10 +104,31 @@ void isr_handler(struct interrupt_frame *frame) {
     }
 }
 
+void irq_register(uint8_t irq, void (*handler)(void)) {
+    if (irq < 16) {
+        irq_handlers[irq] = handler;
+    }
+}
+
+/* Called from irq_common_stub. frame->vector is 32+irq (see pic.h) --
+ * dispatch to whatever driver registered that line, then EOI. A handler
+ * with nothing registered (including genuinely spurious IRQs) is just a
+ * silent EOI, not an error. */
+void irq_handler(struct interrupt_frame *frame) {
+    uint64_t irq = frame->vector - PIC_IRQ_BASE;
+    if (irq < 16 && irq_handlers[irq] != NULL) {
+        irq_handlers[irq]();
+    }
+    pic_send_eoi((uint8_t)irq);
+}
+
 void idt_init(void) {
     for (int vector = 0; vector < 32; vector++) {
         /* present, DPL0, 64-bit interrupt gate (0x8E); IST unused (0). */
         idt_set_gate(vector, isr_stub_table[vector], 0x8E);
+    }
+    for (int i = 0; i < 16; i++) {
+        idt_set_gate(PIC_IRQ_BASE + i, irq_stub_table[i], 0x8E);
     }
 
     idtr_val.limit = sizeof(idt) - 1;

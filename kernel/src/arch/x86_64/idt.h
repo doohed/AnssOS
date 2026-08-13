@@ -15,4 +15,11 @@ struct interrupt_frame {
 
 void idt_init(void);
 
+/* Registers a handler for hardware IRQ `irq` (0-15, pre-remap numbering --
+ * see arch/x86_64/pic.h for how that maps to interrupt vectors). EOI is
+ * sent automatically after the handler returns; handlers must not send
+ * it themselves. Unregistered IRQs are silently EOI'd and ignored (a
+ * safe default for spurious interrupts). */
+void irq_register(uint8_t irq, void (*handler)(void));
+
 #endif

@@ -1,10 +1,12 @@
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
+#include "arch/x86_64/pic.h"
 #include "boot/limine.h"
 #include "boot/requests.h"
 #include "console/fbconsole.h"
 #include "console/splash.h"
 #include "drivers/pci.h"
+#include "drivers/pit.h"
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_gpu.h"
 #include "drivers/virtio/virtio_input.h"
@@ -92,6 +94,15 @@ void kmain(void) {
 
     heap_init();
     kprintf("Heap ready (kmalloc/kfree over the PMM).\n");
+
+    /* pic_remap() maps the Local APIC's MMIO page (vmm_map_mmio(), see
+     * arch/x86_64/pic.c) to relay the legacy PIC's interrupts through
+     * it -- needs the PMM (and its own page-table allocations) up
+     * first, hence running this here rather than right after idt_init(). */
+    pic_remap();
+    pit_init();
+    asm volatile("sti");
+    kprintf("Interrupts enabled (PIT @ %u Hz).\n", PIT_HZ);
     kprintf("M2 complete.\n");
 
     pci_enumerate();

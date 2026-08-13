@@ -1,6 +1,7 @@
 #include "splash.h"
 #include "braille_art.h"
 #include "fbconsole.h"
+#include "../drivers/pit.h"
 #include "../drivers/virtio/virtio_gpu.h"
 
 #include <stdint.h>
@@ -12,11 +13,7 @@
 #define ART_COLOR 0x00FFFFFFu /* BGRX8888: white. */
 #define CAPTION "AnssOS"
 
-/* Rough busy-wait pacing -- there's no timer interrupt yet (see the
- * README roadmap), so this is a plain spin count, not a calibrated delay.
- * Tuned by eye against QEMU/TCG; adjust ANIM_FRAME_DELAY if the animation
- * feels too fast/slow on a given host. */
-#define ANIM_FRAME_DELAY 60000000ull
+#define ANIM_FRAME_MS 250 /* Real time now, via drivers/pit.c -- no more guessed spin count. */
 #define ANIM_CYCLES 4
 
 /* Fixed-width so each frame fully overwrites the last -- otherwise ".."
@@ -131,11 +128,6 @@ static uint32_t text_width(const char *s) {
     return n;
 }
 
-static void spin_delay(void) {
-    for (volatile uint64_t i = 0; i < ANIM_FRAME_DELAY; i++) {
-    }
-}
-
 void splash_show(struct virtio_gpu_fb *fb) {
     uint32_t cols = fb->width / GLYPH_W;
 
@@ -160,7 +152,7 @@ void splash_show(struct virtio_gpu_fb *fb) {
         for (uint32_t f = 0; f < DOT_FRAME_COUNT; f++) {
             fbconsole_draw_text_at(dots_col, dots_row, DOT_FRAMES[f]);
             virtio_gpu_flush();
-            spin_delay();
+            pit_sleep_ms(ANIM_FRAME_MS);
         }
     }
 }
