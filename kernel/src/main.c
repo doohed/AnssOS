@@ -8,8 +8,10 @@
 #include "drivers/pci.h"
 #include "drivers/pit.h"
 #include "drivers/serial.h"
+#include "drivers/virtio/virtio_blk.h"
 #include "drivers/virtio/virtio_gpu.h"
 #include "drivers/virtio/virtio_input.h"
+#include "fs/blkfs.h"
 #include "fs/vfs.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
@@ -158,6 +160,15 @@ void kmain(void) {
 
         vfs_init();
         kprintf("M7 complete: in-memory filesystem ready.\n");
+
+        if (virtio_blk_init() == 0) {
+            blkfs_load(); /* No-op (not an error) on a blank/unformatted disk. */
+            kprintf("M9 complete: persistent storage ready.\n");
+        } else {
+            kprintf(
+                "Skipping M9 (no virtio-blk device) -- filesystem stays in-memory only. "
+                "Boot QEMU with -device virtio-blk-pci for persistence.\n");
+        }
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

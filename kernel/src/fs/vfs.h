@@ -63,6 +63,12 @@ int vfs_move(struct vnode *base, const char *src_path, const char *dest_path);
  * first if it doesn't exist yet. */
 int vfs_write_file(struct vnode *base, const char *path, const char *text, int append);
 
+/* Like vfs_write_file() with append=0, but takes an explicit byte length
+ * instead of relying on strlen() -- for restoring content that isn't
+ * necessarily NUL-terminated text (see fs/blkfs.c). Creates the file
+ * first if it doesn't exist yet. */
+int vfs_write_bytes(struct vnode *base, const char *path, const void *data, size_t size);
+
 /* Prints a file's content via kprintf, followed by one newline. */
 int vfs_cat(struct vnode *base, const char *path);
 

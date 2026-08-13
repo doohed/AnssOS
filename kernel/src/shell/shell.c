@@ -4,7 +4,9 @@
 #include "../drivers/pci.h"
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
+#include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/virtio/virtio_input.h"
+#include "../fs/blkfs.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
 #include "../mm/pmm.h"
@@ -44,6 +46,7 @@ static void cmd_pwd(const char *args);
 static void cmd_ls(const char *args);
 static void cmd_cat(const char *args);
 static void cmd_write(const char *args);
+static void cmd_sync(const char *args);
 
 static const struct builtin BUILTINS[] = {
     {"help", "list commands", cmd_help},
@@ -65,6 +68,7 @@ static const struct builtin BUILTINS[] = {
     {"ls", "ls [path] -- list a directory's contents", cmd_ls},
     {"cat", "cat <file> -- print a file's contents", cmd_cat},
     {"write", "write <file> <text...> -- overwrite a file's contents", cmd_write},
+    {"sync", "flush the filesystem to disk now (also happens automatically)", cmd_sync},
 };
 #define BUILTIN_COUNT ((int)(sizeof(BUILTINS) / sizeof(BUILTINS[0])))
 
@@ -255,12 +259,32 @@ static void cmd_crash(const char *args) {
     kprintf("unreachable if the #DE handler fired correctly.\n");
 }
 
+/* Deliberate triple fault: load a null IDT (limit 0, so no interrupt has
+ * anywhere valid to go), mask hardware IRQs first so only the explicit
+ * int3 below can trigger it, then trigger one. With no valid IDT entry
+ * for the resulting #GP, the CPU faults trying to handle the fault
+ * itself (#GP -> nowhere to go -> double fault -> nowhere to go -> triple
+ * fault), which every x86 CPU treats as a full reset -- unlike chipset-
+ * specific registers (8042 pulse, ICH9's 0xCF9), this needs nothing
+ * beyond the CPU itself. Confirmed via QEMU's QMP `query-status`
+ * (`{"status": "shutdown", "running": false}` immediately after) that
+ * this really does trigger a reset -- if it then looks "stuck" instead
+ * of rebooting back into firmware, check for -no-reboot on the QEMU
+ * command line, which turns that reset into a permanent pause. */
 static void cmd_reboot(const char *args) {
     (void)args;
     kprintf("Resetting...\n");
-    outb(0xCF9, 0x06); /* Standard Q35/ICH9 reset control register. */
+
+    struct {
+        uint16_t limit;
+        uint64_t base;
+    } __attribute__((packed)) null_idt = {0, 0};
+    asm volatile("cli");
+    asm volatile("lidt %0" : : "m"(null_idt));
+    asm volatile("int $0x03");
+
     for (;;) {
-        asm volatile("hlt"); /* In case the reset hasn't taken effect yet. */
+        asm volatile("hlt"); /* Unreachable if the triple fault above worked. */
     }
 }
 
@@ -272,6 +296,14 @@ static void cmd_halt(const char *args) {
     }
 }
 
+/* Auto-persists after a successful mutation (silently -- no extra
+ * output beyond whatever the vfs_ / blkfs_save() calls themselves print
+ * on failure) so changes survive a reboot without the user needing to
+ * remember `sync`. A no-op if there's no virtio-blk device at all. */
+static void autosave(void) {
+    blkfs_save();
+}
+
 static void cmd_create(const char *args) {
     char buf[LINE_MAX];
     copy_bounded(buf, args, sizeof(buf));
@@ -280,12 +312,17 @@ static void cmd_create(const char *args) {
         kprintf("usage: create dir|file <name>\n");
         return;
     }
+    int result;
     if (strcmp_ci(tokens[0], "dir") == 0) {
-        vfs_mkdir(cwd, tokens[1]);
+        result = vfs_mkdir(cwd, tokens[1]);
     } else if (strcmp_ci(tokens[0], "file") == 0) {
-        vfs_create_file(cwd, tokens[1]);
+        result = vfs_create_file(cwd, tokens[1]);
     } else {
         kprintf("usage: create dir|file <name>\n");
+        return;
+    }
+    if (result == 0) {
+        autosave();
     }
 }
 
@@ -297,10 +334,12 @@ static void cmd_delete(const char *args) {
         kprintf("usage: delete dir|file <name>\n");
         return;
     }
-    if (strcmp_ci(tokens[0], "dir") == 0 || strcmp_ci(tokens[0], "file") == 0) {
-        vfs_remove(cwd, tokens[1], cwd);
-    } else {
+    if (strcmp_ci(tokens[0], "dir") != 0 && strcmp_ci(tokens[0], "file") != 0) {
         kprintf("usage: delete dir|file <name>\n");
+        return;
+    }
+    if (vfs_remove(cwd, tokens[1], cwd) == 0) {
+        autosave();
     }
 }
 
@@ -312,10 +351,12 @@ static void cmd_copy(const char *args) {
         kprintf("usage: copy dir|file <src> <dest>\n");
         return;
     }
-    if (strcmp_ci(tokens[0], "dir") == 0 || strcmp_ci(tokens[0], "file") == 0) {
-        vfs_copy(cwd, tokens[1], tokens[2]);
-    } else {
+    if (strcmp_ci(tokens[0], "dir") != 0 && strcmp_ci(tokens[0], "file") != 0) {
         kprintf("usage: copy dir|file <src> <dest>\n");
+        return;
+    }
+    if (vfs_copy(cwd, tokens[1], tokens[2]) == 0) {
+        autosave();
     }
 }
 
@@ -327,10 +368,12 @@ static void cmd_move(const char *args) {
         kprintf("usage: move dir|file <src> <dest>\n");
         return;
     }
-    if (strcmp_ci(tokens[0], "dir") == 0 || strcmp_ci(tokens[0], "file") == 0) {
-        vfs_move(cwd, tokens[1], tokens[2]);
-    } else {
+    if (strcmp_ci(tokens[0], "dir") != 0 && strcmp_ci(tokens[0], "file") != 0) {
         kprintf("usage: move dir|file <src> <dest>\n");
+        return;
+    }
+    if (vfs_move(cwd, tokens[1], tokens[2]) == 0) {
+        autosave();
     }
 }
 
@@ -394,7 +437,20 @@ static void cmd_write(const char *args) {
         p++;
     }
 
-    vfs_write_file(cwd, name_start, p, 0);
+    if (vfs_write_file(cwd, name_start, p, 0) == 0) {
+        autosave();
+    }
+}
+
+static void cmd_sync(const char *args) {
+    (void)args;
+    if (!virtio_blk_is_ready()) {
+        kprintf("sync: no virtio-blk device -- nothing to persist to\n");
+        return;
+    }
+    if (blkfs_save() == 0) {
+        kprintf("Filesystem synced.\n");
+    }
 }
 
 void shell_run(void) {

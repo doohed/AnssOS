@@ -76,10 +76,11 @@ AnssOS/
 
 ## Building and running
 
-Needs `nasm`, `qemu-system-x86_64`, OVMF firmware, `xorriso`, and `mtools`:
+Needs `nasm`, `qemu-system-x86_64`, `qemu-img`, OVMF firmware, `xorriso`,
+and `mtools`:
 
 ```sh
-sudo apt-get install -y nasm qemu-system-x86 ovmf xorriso mtools
+sudo apt-get install -y nasm qemu-system-x86 qemu-utils ovmf xorriso mtools
 ```
 
 Building and running are two separate scripts (`make`/`make run` are thin
@@ -93,7 +94,10 @@ wrappers around them, if you'd rather not call them directly):
 `run-qemu.sh` does **not** build anything itself — it errors out if
 `AnssOS.iso` doesn't exist yet, telling you to run `build-iso.sh` first.
 It auto-detects the local OVMF firmware layout (combined `OVMF.fd` or split
-`OVMF_CODE`/`OVMF_VARS`).
+`OVMF_CODE`/`OVMF_VARS`). It also creates a blank 16 MiB `AnssOS-disk.img`
+next to the ISO on first run (via `qemu-img`, gitignored) and attaches it
+as `virtio-blk-pci` for the M9 persistent filesystem — delete the file to
+reset storage back to blank.
 
 ### Code style
 
@@ -212,13 +216,37 @@ virtio-gpu queue.
       desyncing every `va_arg` read after it in that call) — its own doc
       comment already said so, but it's a sharp edge worth remembering.
 
+- [x] **M9 — Persistent storage (virtio-blk).** The M7 filesystem was
+      100% in-RAM and reset every reboot. `drivers/virtio/virtio_blk.c`
+      is a new virtio-blk-pci driver (device type 2, PCI id `0x1042`),
+      same shape as the gpu/input drivers: built entirely on the
+      existing generic transport in `virtio.c`, one request virtqueue,
+      each I/O a 3-descriptor chain (header / data / status).
+      `fs/blkfs.c` is the persistence layer on top of it — not a "real"
+      filesystem (no inode table, no free-space bitmap): it recursively
+      serializes the *entire* in-memory `vnode` tree to a flat buffer
+      (superblock at sector 0, tree data from sector 1) and writes it in
+      one shot, replaying it back through `vfs.c`'s own
+      `vfs_mkdir`/`vfs_create_file`/`vfs_write_bytes` on load — the same
+      pragmatic "correct and sufficient at hobby-OS scale, not designed
+      to scale to a large filesystem" trade-off this project has made
+      elsewhere (splash pacing, the shell's line editor). New
+      `vfs_write_bytes()` in `vfs.c` (a `vfs_write_file()` refactor)
+      takes an explicit length instead of `strlen()`-ing, since restored
+      file content isn't NUL-terminated text. The shell auto-saves after
+      every successful `create`/`delete`/`copy`/`move`/`write`, so
+      persistence needs no extra step; a new `sync` builtin flushes
+      on demand (e.g. right before `halt`/`reboot`). Booting without
+      `-device virtio-blk-pci` attached still works exactly as in M7 —
+      in-memory only, `sync` reports there's nothing to persist to.
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above — everything still polls), APIC/IOAPIC beyond the minimal
 LINT0 passthrough above (no I/O APIC redirection table use, no SMP),
-per-process address spaces / demand paging, a `virtio-blk` driver +
-on-disk filesystem format (persistence — the in-memory filesystem above
-resets every boot), a scheduler, and userspace. These are natural next
+per-process address spaces / demand paging, a real on-disk filesystem
+format (ext2/FAT/UFS — M9's format above is a whole-tree dump, not an
+incremental one), a scheduler, and userspace. These are natural next
 milestones from here.
 
 ## Using the shell interactively
@@ -266,3 +294,24 @@ use QEMU's `QKeyCode` names, not the literal character -- `.` is `"dot"`,
 these silently fails (check the JSON response for an `"error"` key; it's
 easy to miss otherwise) and the keystroke is just dropped, which reads
 exactly like a kernel bug until you notice `main.c` arrived as `mainc`.
+
+Scripting the serial console via a FIFO (`qemu-system-x86_64 ... -serial
+stdio < some.fifo`) has its own gotcha: each `printf ... > some.fifo`
+from a separate shell invocation opens and immediately closes the write
+end. Every close-with-no-other-writer-open briefly signals EOF to
+whatever's reading the pipe, and QEMU's stdio backend treats that as "the
+user hit Ctrl-D" and stops polling stdin for the rest of the process's
+life -- keystrokes sent afterwards vanish with no error. Keep a single
+write descriptor open for the whole session instead (`exec 4<>some.fifo`
+once, `printf ... >&4` for every subsequent command, from the *same*
+shell process) and it behaves like a real terminal.
+
+`virtio-blk-pci` is also worth calling out: unlike `virtio-gpu-pci`/
+`virtio-keyboard-pci` (which QEMU only ever exposes as modern virtio
+1.x devices), `virtio-blk-pci` defaults to the legacy/transitional PCI
+device id (`0x1001`) unless you pass `disable-legacy=on`. `virtio_blk.c`
+only looks for the modern id (`0x1042`, see `VIRTIO_BLK_PCI_DEVICE_ID`),
+so without that flag `virtio_blk_init()` reports "no block device
+found" even though `-device virtio-blk-pci` is right there on the
+command line. `scripts/run-qemu.sh` already passes it; add it yourself
+if you ever invoke `qemu-system-x86_64` directly.

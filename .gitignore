@@ -8,6 +8,7 @@ kernel/src/**/*.d
 /*.hdd
 /iso_root/
 /OVMF_VARS.local.fd
+/AnssOS-disk.img
 
 # Agents config
 .claude/

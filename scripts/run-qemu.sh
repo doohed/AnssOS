@@ -14,6 +14,15 @@ if [ ! -f "$ISO" ]; then
     exit 1
 fi
 
+# Persistent storage backing (M9, virtio-blk) -- a blank disk formats
+# itself on first `sync`/auto-save from the shell. Kept out of git
+# (see .gitignore) since it's runtime state, not source.
+DISK="AnssOS-disk.img"
+if [ ! -f "$DISK" ]; then
+    echo "Creating blank $DISK (16 MiB)..."
+    qemu-img create -f raw "$DISK" 16M >/dev/null
+fi
+
 find_ovmf_combined() {
     for p in /usr/share/OVMF/OVMF.fd /usr/share/ovmf/OVMF.fd; do
         [ -f "$p" ] && printf '%s\n' "$p" && return 0
@@ -58,11 +67,13 @@ fi
 exec qemu-system-x86_64 \
     -M q35 \
     -m 256M \
-    -no-reboot -no-shutdown \
+    -no-shutdown \
     -vga none \
     "${fw_args[@]}" \
     -cdrom "$ISO" \
     -device virtio-gpu-pci \
     -device virtio-keyboard-pci \
+    -drive file="$DISK",if=none,id=disk0,format=raw \
+    -device virtio-blk-pci,drive=disk0,disable-legacy=on \
     -serial stdio \
     "$@"

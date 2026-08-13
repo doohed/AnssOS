@@ -372,7 +372,7 @@ int vfs_move(struct vnode *base, const char *src_path, const char *dest_path) {
     return 0;
 }
 
-int vfs_write_file(struct vnode *base, const char *path, const char *text, int append) {
+int vfs_write_bytes(struct vnode *base, const char *path, const void *data, size_t size) {
     struct vnode *node = vfs_resolve(base, path);
     if (node == NULL) {
         if (vfs_create_file(base, path) != 0) {
@@ -388,29 +388,48 @@ int vfs_write_file(struct vnode *base, const char *path, const char *text, int a
         return -1;
     }
 
-    size_t text_len = strlen(text);
-    size_t new_size = append ? node->size + text_len : text_len;
-
-    uint8_t *buf = kmalloc(new_size > 0 ? new_size : 1);
+    uint8_t *buf = kmalloc(size > 0 ? size : 1);
     if (buf == NULL) {
         kprintf("write: out of memory\n");
         return -1;
     }
-
-    if (append && node->size > 0) {
-        memcpy(buf, node->data, node->size);
-        memcpy(buf + node->size, text, text_len);
-    } else {
-        memcpy(buf, text, text_len);
+    if (size > 0) {
+        memcpy(buf, data, size);
     }
 
     if (node->data != NULL) {
         kfree(node->data);
     }
     node->data = buf;
-    node->size = new_size;
-    node->capacity = new_size;
+    node->size = size;
+    node->capacity = size;
     return 0;
+}
+
+int vfs_write_file(struct vnode *base, const char *path, const char *text, int append) {
+    struct vnode *node = vfs_resolve(base, path);
+    size_t prefix_len = (append && node != NULL && node->type == VNODE_FILE) ? node->size : 0;
+    size_t text_len = strlen(text);
+
+    if (prefix_len == 0) {
+        return vfs_write_bytes(base, path, text, text_len);
+    }
+
+    /* Appending to existing content: build the combined buffer first,
+     * since vfs_write_bytes() replaces node->data wholesale (it doesn't
+     * know how to append). */
+    size_t new_size = prefix_len + text_len;
+    uint8_t *combined = kmalloc(new_size > 0 ? new_size : 1);
+    if (combined == NULL) {
+        kprintf("write: out of memory\n");
+        return -1;
+    }
+    memcpy(combined, node->data, prefix_len);
+    memcpy(combined + prefix_len, text, text_len);
+
+    int result = vfs_write_bytes(base, path, combined, new_size);
+    kfree(combined);
+    return result;
 }
 
 int vfs_cat(struct vnode *base, const char *path) {
