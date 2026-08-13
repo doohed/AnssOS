@@ -63,5 +63,6 @@ exec qemu-system-x86_64 \
     "${fw_args[@]}" \
     -cdrom "$ISO" \
     -device virtio-gpu-pci \
+    -device virtio-keyboard-pci \
     -serial stdio \
     "$@"

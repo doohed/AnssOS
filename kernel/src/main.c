@@ -7,7 +7,11 @@
 #include "drivers/pci.h"
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_gpu.h"
+#include "drivers/virtio/virtio_input.h"
+#include "fs/vfs.h"
+#include "mm/heap.h"
 #include "mm/pmm.h"
+#include "shell/shell.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -85,6 +89,9 @@ void kmain(void) {
         hcf();
     }
     kprintf("PMM self-test OK: allocated/freed 16 distinct pages\n");
+
+    heap_init();
+    kprintf("Heap ready (kmalloc/kfree over the PMM).\n");
     kprintf("M2 complete.\n");
 
     pci_enumerate();
@@ -135,21 +142,23 @@ void kmain(void) {
         kprintf("Skipping M4/M5 (no virtio-gpu-pci device).\n");
     }
 
-    kprintf("Triggering a deliberate #DE to verify exception handling...\n");
+    if (virtio_input_init() == 0) {
+        kprintf("M6 complete: virtio-input keyboard ready.\n");
 
-    /* Forces a real DIV instruction with a zero divisor -- inline asm so */
-    /* the compiler can't optimize away or reorder around the fault the */
-    /* way it could with `1 / (volatile int)0` at -O2. Vector 0, #DE, no */
-    /* error code. Never returns: isr_handler halts after dumping state. */
-    asm volatile(
-        "xor %%edx, %%edx\n"
-        "mov $1, %%eax\n"
-        "xor %%ecx, %%ecx\n"
-        "div %%ecx\n"
-        :
-        :
-        : "eax", "ecx", "edx");
+        vfs_init();
+        kprintf("M7 complete: in-memory filesystem ready.\n");
 
-    kprintf("unreachable if the #DE handler fired correctly.\n");
+        /* The deliberate #DE self-test that used to always run here
+         * (proving the M1 exception handler works) is now the shell's
+         * `crash` builtin -- trigger it on demand instead of
+         * automatically, since the handler halts forever and we want an
+         * interactive prompt instead. shell_run() never returns. */
+        shell_run();
+    } else {
+        kprintf(
+            "Skipping M6 and the shell (no virtio-input keyboard) -- boot QEMU with "
+            "-device virtio-keyboard-pci\n");
+    }
+
     hcf();
 }

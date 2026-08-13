@@ -283,9 +283,12 @@ void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffe
     *q->notify = q->index;
 }
 
-uint32_t virtio_queue_wait(struct virtio_queue *q) {
-    while (q->used->idx == q->last_used_idx) {
-        asm volatile("pause");
+/* Shared by virtio_queue_wait() and virtio_queue_try_wait(): pops one
+ * entry off the used ring and reclaims its descriptor chain. Returns 0
+ * if the used ring hasn't advanced yet, 1 otherwise. */
+static int pop_used(struct virtio_queue *q, uint16_t *out_desc_id, uint32_t *out_len) {
+    if (q->used->idx == q->last_used_idx) {
+        return 0;
     }
 
     uint16_t used_slot = (uint16_t)(q->last_used_idx % q->size);
@@ -294,5 +297,20 @@ uint32_t virtio_queue_wait(struct virtio_queue *q) {
     q->last_used_idx++;
 
     virtio_queue_free_chain(q, desc_id);
+    *out_desc_id = desc_id;
+    *out_len = len;
+    return 1;
+}
+
+uint32_t virtio_queue_wait(struct virtio_queue *q) {
+    uint16_t desc_id;
+    uint32_t len;
+    while (!pop_used(q, &desc_id, &len)) {
+        asm volatile("pause");
+    }
     return len;
+}
+
+int virtio_queue_try_wait(struct virtio_queue *q, uint16_t *out_desc_id, uint32_t *out_len) {
+    return pop_used(q, out_desc_id, out_len);
 }

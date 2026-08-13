@@ -64,6 +64,17 @@ void fbconsole_putc(char c) {
         cursor_col = 0;
         return;
     }
+    if (c == '\b') {
+        /* No-op at column 0 -- deliberately not walking back onto the
+         * previous line, since we don't track where lines actually
+         * ended (the caller wrapped mid-word or not). Good enough for
+         * the shell's single-line input editing. */
+        if (cursor_col > 0) {
+            cursor_col--;
+            draw_glyph(cursor_col, cursor_row, ' ');
+        }
+        return;
+    }
     if (c == '\n') {
         cursor_col = 0;
         cursor_row++;

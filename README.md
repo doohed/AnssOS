@@ -58,13 +58,17 @@ AnssOS/
         ├── arch/x86_64/idt.{c,h}     # IDT + exception dispatch (isr.S has the stubs)
         ├── mm/pmm.{c,h}              # bitmap physical page allocator
         ├── mm/vmm.{c,h}              # minimal page-table mapper, MMIO only
+        ├── mm/heap.{c,h}             # kmalloc/kfree, first-fit over the PMM
         ├── drivers/serial.{c,h}      # COM1 driver + kprintf
         ├── drivers/pci.{c,h}         # legacy config-space PCI enumeration
         ├── drivers/virtio/virtio.{c,h}      # virtio-pci transport + virtqueues
         ├── drivers/virtio/virtio_gpu.{c,h}  # virtio-gpu 2D driver
+        ├── drivers/virtio/virtio_input.{c,h} # virtio-input keyboard driver
         ├── console/fbconsole.{c,h}   # bitmap-font text console over the gpu framebuffer
         ├── console/splash.{c,h}      # boot splash: centered logo + looping "..." indicator
         ├── console/font8x8_basic.h   # vendored public-domain 8x8 font (dhepper/font8x8)
+        ├── shell/shell.{c,h}         # interactive command shell
+        ├── fs/vfs.{c,h}              # in-memory directory/file tree
         └── lib/string.{c,h}          # freestanding mem*/str* functions
 ```
 
@@ -138,8 +142,60 @@ virtio-gpu queue.
       Windows-style boot splash first (centered ASCII logo, looping
       `.`/`..`/`...` indicator) before the console takes over — pacing is
       a plain busy-wait spin, since there's no timer interrupt yet.
+- [x] **M6 — virtio-input keyboard + interactive shell.** QEMU exposes
+      keyboard/mouse/tablet under the identical PCI id, so
+      `virtio_input_init()` walks every match (`pci_find_device_nth()`)
+      and reads each one's `VIRTIO_INPUT_CFG_ID_NAME` to find the one
+      actually named "Keyboard". `shell/shell.c` reads lines from it
+      (polling, with backspace editing) and dispatches to a small builtin
+      table (`help`, `echo`, `clear`, `uname`, `meminfo`, `lspci`,
+      `crash`, `reboot`, `halt`) — command *names* are matched case-
+      insensitively, arguments keep whatever case you typed. The `crash`
+      builtin is the `#DE` self-test that used to run automatically at
+      the end of boot — now on demand, since the exception handler halts
+      forever and we want an interactive prompt afterward instead.
+- [x] **M7 — In-memory filesystem + directory/file management.** Two new
+      pieces underneath the shell: `mm/heap.c` (`kmalloc`/`kfree`, a
+      first-fit allocator carving variable-sized blocks out of pages from
+      `pmm_alloc_pages()` — nothing above the PMM could allocate anything
+      but whole pages before this), and `fs/vfs.c`, a real tree of
+      directory/file `vnode`s (parent/children/sibling links, absolute or
+      cwd-relative path resolution with `.`/`..`) that lives entirely in
+      that heap and resets on reboot — no block device or on-disk format
+      yet (that's the natural next step, once this UX layer was proven).
+      New shell builtins, deliberately not named like standard Unix
+      (`create dir <name>` instead of `mkdir`, `create file <name>`
+      instead of `touch`, same verb-first pattern for `delete`/`copy`/
+      `move`): `create`, `delete`, `copy`, `move` (each `dir`/`file` +
+      path, `copy`/`move` also take a destination), plus `cd`, `pwd`,
+      `ls`, `cat`, `write` to navigate and inspect. The prompt now shows
+      the current directory (`AnssOS:/some/path>`). `vfs_remove()`
+      refuses to delete the current directory or an ancestor of it (the
+      shell's `cwd` pointer would otherwise dangle) — verified by trying
+      to delete `.`, `..`, and an absolute ancestor path while `cwd` sat
+      inside the target, all correctly refused.
 
 **Explicitly out of scope for now:** IRQ/MSI-X-driven virtio (everything
-above polls), per-process address spaces / demand paging, virtio-blk,
-virtio-net, a filesystem, a scheduler, and userspace. These are natural
-next milestones from here.
+above polls), per-process address spaces / demand paging, a `virtio-blk`
+driver + on-disk filesystem format (persistence — the in-memory
+filesystem above resets every boot), a scheduler, and userspace. These
+are natural next milestones from here.
+
+## Testing keyboard input headlessly
+
+QEMU's HMP `sendkey` monitor command does **not** reach
+`virtio-keyboard-pci` in this setup — it targets the legacy PS/2 keyboard
+that q35's i8042 controller provides by default (`info qtree` shows both
+`ps2-kbd` and `virtio-keyboard-pci` present simultaneously), and AnssOS has
+no PS/2 driver on purpose (virtio-only). To drive the shell from a script,
+use QMP's `input-send-event` instead, with `device` set to the **display**
+device's id (not the keyboard's — that crashes this QEMU build), e.g.
+`-device virtio-gpu-pci,id=gpu0` and `{"execute": "input-send-event",
+"arguments": {"device": "gpu0", "events": [...]}}` for each key down/up.
+
+One more gotcha: punctuation keys use QEMU's `QKeyCode` names, not the
+literal character -- `.` is `"dot"`, `/` is `"slash"`, `,` is `"comma"`,
+etc. Sending the raw character for these silently fails (check the JSON
+response for an `"error"` key; it's easy to miss otherwise) and the
+keystroke is just dropped, which reads exactly like a kernel bug until
+you notice `main.c` arrived as `mainc`.

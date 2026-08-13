@@ -115,4 +115,12 @@ void virtio_queue_submit_chain(struct virtio_queue *q, const struct virtio_buffe
 /* chain's descriptors, and returns the byte length the device wrote. */
 uint32_t virtio_queue_wait(struct virtio_queue *q);
 
+/* Non-blocking version of virtio_queue_wait(): if the used ring has
+ * advanced, reclaims the descriptor chain, fills *out_desc_id (the head
+ * descriptor's index -- useful when, unlike virtio_gpu.c, the caller
+ * keeps a separate buffer per descriptor slot and needs to know which
+ * one just completed, e.g. virtio_input.c's event queue) and *out_len,
+ * and returns 1. Returns 0 immediately if nothing is ready yet. */
+int virtio_queue_try_wait(struct virtio_queue *q, uint16_t *out_desc_id, uint32_t *out_len);
+
 #endif

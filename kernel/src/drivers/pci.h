@@ -30,4 +30,15 @@ void pci_enumerate(void);
 /* if pci_enumerate() hasn't run yet. */
 const struct pci_device *pci_find_device(uint16_t vendor_id, uint16_t device_id);
 
+/* Like pci_find_device(), but returns the `index`'th match (0-based) --
+ * needed for e.g. virtio-input, where QEMU exposes keyboard, mouse, and
+ * tablet devices under the identical vendor:device id and the caller has
+ * to inspect each one's config to tell them apart. Returns NULL past the
+ * last match. */
+const struct pci_device *pci_find_device_nth(uint16_t vendor_id, uint16_t device_id, int index);
+
+/* Re-lists whatever pci_enumerate() already found, via kprintf, without
+ * rescanning -- used by the shell's `lspci` builtin. */
+void pci_print_devices(void);
+
 #endif

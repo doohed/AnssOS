@@ -68,6 +68,12 @@ static const char *class_name(uint8_t class_code) {
     }
 }
 
+static void print_device(const struct pci_device *dev) {
+    kprintf("PCI %u:%u.%u  %x:%x  class %x.%x (%s)\n", dev->bus, dev->slot, dev->func,
+            dev->vendor_id, dev->device_id, dev->class_code, dev->subclass,
+            class_name(dev->class_code));
+}
+
 static void pci_probe_function(uint8_t bus, uint8_t slot, uint8_t func) {
     uint16_t vendor_id = pci_config_read16(bus, slot, func, 0x00);
     if (vendor_id == 0xFFFF || device_count >= PCI_MAX_DEVICES) {
@@ -92,8 +98,7 @@ static void pci_probe_function(uint8_t bus, uint8_t slot, uint8_t func) {
         }
     }
 
-    kprintf("PCI %u:%u.%u  %x:%x  class %x.%x (%s)\n", bus, slot, func, dev->vendor_id,
-            dev->device_id, dev->class_code, dev->subclass, class_name(dev->class_code));
+    print_device(dev);
 }
 
 void pci_enumerate(void) {
@@ -119,10 +124,25 @@ void pci_enumerate(void) {
 }
 
 const struct pci_device *pci_find_device(uint16_t vendor_id, uint16_t device_id) {
+    return pci_find_device_nth(vendor_id, device_id, 0);
+}
+
+const struct pci_device *pci_find_device_nth(uint16_t vendor_id, uint16_t device_id, int index) {
+    int seen = 0;
     for (int i = 0; i < device_count; i++) {
         if (devices[i].vendor_id == vendor_id && devices[i].device_id == device_id) {
-            return &devices[i];
+            if (seen == index) {
+                return &devices[i];
+            }
+            seen++;
         }
     }
     return NULL;
+}
+
+void pci_print_devices(void) {
+    for (int i = 0; i < device_count; i++) {
+        print_device(&devices[i]);
+    }
+    kprintf("PCI: %d device(s)\n", device_count);
 }
