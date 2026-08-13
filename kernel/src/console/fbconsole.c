@@ -110,7 +110,12 @@ void fbconsole_write(const char *s) {
 
 void fbconsole_kprintf_sink(char c) {
     fbconsole_putc(c);
-    if (c == '\n') {
-        virtio_gpu_flush();
-    }
+    /* Flush every character, not just on '\n' -- this sink also carries
+     * interactive shell input echo (drivers/serial.c's RX path / the
+     * virtio-input keyboard), and a typed character that doesn't show up
+     * on screen until Enter looks exactly like the keystroke never
+     * arrived at all. Costs a couple of virtqueue round trips per
+     * character during bulk log output (e.g. `help`'s ~20 lines), which
+     * is cheap enough in practice not to matter. */
+    virtio_gpu_flush();
 }
