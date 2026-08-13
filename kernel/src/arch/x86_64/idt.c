@@ -1,5 +1,6 @@
 #include "idt.h"
 #include "pic.h"
+#include "usermode.h"
 #include "../../drivers/serial.h"
 
 #include <stddef.h>
@@ -28,9 +29,13 @@ static struct idtr idtr_val;
 
 /* isr_stub_table[0..31]: one small asm trampoline per CPU exception vector, */
 /* defined in isr.S. irq_stub_table[0..15]: same idea for hardware IRQs */
-/* (vectors 32-47), defined in irq.S. */
+/* (vectors 32-47), defined in irq.S. isr_stub_syscall: the vector-0x80 */
+/* syscall trampoline, defined in syscall.S. */
 extern void *isr_stub_table[32];
 extern void *irq_stub_table[16];
+extern void isr_stub_syscall(void);
+
+#define VECTOR_SYSCALL 0x80
 
 static void (*irq_handlers[16])(void);
 
@@ -83,10 +88,22 @@ static const char *exception_name(uint64_t vector) {
     return vector < 32 ? names[vector] : "Unknown";
 }
 
-/* Called from isr_common_stub with rdi pointing at the saved register/ */
-/* frame state. There's no recovery path yet -- any CPU exception is fatal */
-/* until we have real fault handling (e.g. page fault -> demand paging). */
+/* Called from isr_common_stub with rdi pointing at the saved register/
+ * frame state. A fault taken from ring 3 (frame->cs & 3 == 3 -- can only
+ * happen once a user task is actually running, via enter_usermode())
+ * doesn't bring down the kernel: it ends that task and returns control
+ * to whoever called enter_usermode(), same as an explicit exit syscall.
+ * There's no process table yet to distinguish multiple tasks, so this is
+ * deliberately simple -- any user-mode fault ends *the* running task. A
+ * fault from ring 0 remains fatal (a genuine kernel bug, not recoverable
+ * until we have real fault handling, e.g. page fault -> demand paging). */
 void isr_handler(struct interrupt_frame *frame) {
+    if ((frame->cs & 3) == 3) {
+        kprintf("\nuser program crashed: %s (vector %lu, error 0x%lx) at rip=0x%lx\n",
+                exception_name(frame->vector), frame->vector, frame->error_code, frame->rip);
+        return_to_kernel(-1);
+    }
+
     kprintf("\n--- CPU EXCEPTION: %s (vector %lu, error 0x%lx) ---\n",
             exception_name(frame->vector), frame->vector, frame->error_code);
     kprintf("rip=0x%lx cs=0x%lx rflags=0x%lx rsp=0x%lx ss=0x%lx\n", frame->rip, frame->cs,
@@ -130,6 +147,11 @@ void idt_init(void) {
     for (int i = 0; i < 16; i++) {
         idt_set_gate(PIC_IRQ_BASE + i, irq_stub_table[i], 0x8E);
     }
+
+    /* present, DPL3 (callable via `int 0x80` from ring 3), 64-bit
+     * interrupt gate (0xEE) -- the one deliberately non-DPL0 gate in the
+     * table. */
+    idt_set_gate(VECTOR_SYSCALL, isr_stub_syscall, 0xEE);
 
     idtr_val.limit = sizeof(idt) - 1;
     idtr_val.base = (uint64_t)&idt;

@@ -3,12 +3,20 @@
 
 #include <stdint.h>
 
-/* Register state as pushed by isr_common_stub (see isr.S), in the order */
-/* the C handler sees it (isr_handler pops nothing, so this must match */
-/* the push order there exactly, reversed). */
+/* Register state as pushed by isr_common_stub (see isr.S) and
+ * syscall_common_stub (see syscall.S), in the order the C handler sees
+ * it. The stubs `push` each register in the order r15, r14, ..., rbx,
+ * rax -- since `push` stores at the *new* (decremented) %rsp, the *last*
+ * register pushed (rax) ends up at the *lowest* address, i.e. offset 0
+ * from the frame pointer the stubs pass in %rdi. This must therefore be
+ * the reverse of the push order for the field offsets to actually match
+ * the pushed registers; only the GPR block needs reversing -- vector/
+ * error_code/rip/cs/rflags/rsp/ss are pushed after (GPRs) or before
+ * (rip..ss, by hardware) in an order that already matches declaration
+ * order here. */
 struct interrupt_frame {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp, r8;
+    uint64_t r9, r10, r11, r12, r13, r14, r15;
     uint64_t vector, error_code;
     uint64_t rip, cs, rflags, rsp, ss;
 };

@@ -87,7 +87,7 @@ Building and running are two separate scripts (`make`/`make run` are thin
 wrappers around them, if you'd rather not call them directly):
 
 ```sh
-./scripts/build-iso.sh   # build kernel/bin/kernel and assemble AnssOS.iso
+./scripts/build-iso.sh   # build the M10 userland test payloads, kernel/bin/kernel, and assemble AnssOS.iso
 ./scripts/run-qemu.sh    # boot the already-built ISO (UEFI/OVMF, virtio-gpu-pci, serial on stdout)
 ```
 
@@ -240,14 +240,78 @@ virtio-gpu queue.
       `-device virtio-blk-pci` attached still works exactly as in M7 —
       in-memory only, `sync` reports there's nothing to persist to.
 
+- [x] **M10 — Ring-3 userspace (one program at a time).** Everything
+      before this milestone ran as one privileged kernel blob; nothing
+      could execute code the kernel didn't ship. `mm/vmm.c` grew a real
+      per-address-space API (`vmm_new_address_space()`/`vmm_map()`/
+      `vmm_switch()`, plus a `PAGE_USER` flag) on top of its existing
+      4-level page-table walker — a fresh address space copies the
+      current one's upper 256 PML4 entries (the whole higher half:
+      kernel code, the HHDM, MMIO) so kernel/HHDM mappings are
+      automatically present, supervisor-only, in every task without any
+      further bookkeeping. `arch/x86_64/gdt.c`'s ring-3 GDT descriptors
+      (built since early on but never used) are now exposed as
+      `SEL_UCODE`/`SEL_UDATA`, and `tss_set_kernel_stack()` wires up
+      `TSS.RSP0` — previously never set at all, which is what the CPU
+      needs to find a valid ring-0 stack on any ring 3 -> ring 0
+      transition. New `arch/x86_64/usermode.c/.h/.S` is the actual
+      ring-3 entry/exit primitive: `enter_usermode()` is a hand-rolled
+      one-shot context switch (asm-level "setjmp" of the kernel's own
+      registers/`rsp`, then a manually-built `iretq` frame into ring 3);
+      `return_to_kernel()` (called from the exit syscall, and from a
+      user-mode fault -- see below) restores it via a bare `ret`. New
+      vector `0x80` (the one deliberately `DPL=3` gate in the IDT) is
+      the syscall entry point, dispatching in new `exec/syscall.c` to
+      `exit`/`write`/`read` (Linux's own syscall numbers, reused for
+      free in case a real Linux-binary-compatibility layer is ever
+      attempted). `exec/elf.c` is a from-scratch static, non-PIE ELF64
+      loader: `PT_LOAD` segments get their own `pmm_alloc_pages()` run,
+      mapped `PAGE_USER`, file bytes copied in and the rest zeroed for
+      bss. New shell builtin `run <path>` ties it together. A hand-
+      rolled 3-syscall "libc" + two tiny test programs live in the new
+      `userland/` directory (`hello.c`, proving `write`/`read`/`exit`
+      round-trip; `crash.c`, deliberately faulting through a null
+      pointer) — built by `scripts/build-userland.sh` and embedded
+      directly into the kernel image via `.incbin` (see
+      `exec/userland_blobs.S`) as self-test fixtures, the same idea as
+      the PMM/VMM self-tests above but landing on the VFS instead of
+      just printing a result.
+      **The actual discovery this milestone was about:** `idt.c`'s
+      `struct interrupt_frame` had every general-purpose register field
+      declared in the *same* order the assembly stubs `push` them in —
+      but since `push` stores at the stack pointer *after* decrementing
+      it, the last register pushed ends up at the lowest address (offset
+      0), not the first. The struct needed the reverse order to actually
+      alias the pushed registers correctly (the doc comment even said
+      "reversed" — just not what the code did). This bug predates M10
+      by nine milestones and was completely invisible the whole time,
+      since the only consumer (`isr_handler`'s fatal-exception dump) only
+      ever *printed* these values after an unrecoverable halt — nobody
+      was cross-checking a frozen crash dump against what the registers
+      "should" say. It became fatal the moment `syscall_dispatch()`
+      started reading `frame->rax`/`rdi`/`rsi`/`rdx` for their actual,
+      load-bearing meaning (the syscall number and arguments): every
+      syscall silently read the wrong register, always fell through to
+      the "unknown syscall" case, and returned without doing anything —
+      which looked exactly like a hang, since the userland test payload
+      never even checks `write()`/`exit()`'s return values.
+      Diagnosed by querying real CPU state via QEMU's monitor (`info
+      registers`) rather than trusting kernel-side debug prints, which
+      is what actually revealed `RAX`/`RDI` held plausible values while
+      `struct interrupt_frame`'s fields didn't reflect them.
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above — everything still polls), APIC/IOAPIC beyond the minimal
-LINT0 passthrough above (no I/O APIC redirection table use, no SMP),
-per-process address spaces / demand paging, a real on-disk filesystem
-format (ext2/FAT/UFS — M9's format above is a whole-tree dump, not an
-incremental one), a scheduler, and userspace. These are natural next
-milestones from here.
+LINT0 passthrough above (no I/O APIC redirection table use, no SMP), a
+real on-disk filesystem format (ext2/FAT/UFS — M9's format above is a
+whole-tree dump, not an incremental one), `fork()`/multiple concurrent
+processes, any preemptive scheduling, dynamic linking/shared libraries,
+W^X/NX enforcement, the `SYSCALL`/`SYSRET` MSR fast path (`int 0x80`
+only for now), signals, and a real libc port (musl or similar) usable
+for arbitrary third-party source — M10's hand-written 3-function stub
+above is just enough to prove the pipeline, not something to build real
+programs against yet. These are natural next milestones from here.
 
 ## Using the shell interactively
 

@@ -3,11 +3,6 @@
 
 #include <stdint.h>
 
-/* Selectors, fixed by the layout of struct gdt_table below. */
-#define SEL_KCODE 0x08
-#define SEL_KDATA 0x10
-#define SEL_TSS 0x28
-
 struct __attribute__((packed)) gdt_entry {
     uint16_t limit_low;
     uint16_t base_low;
@@ -123,4 +118,8 @@ void gdt_init(void) {
     asm volatile("lgdt (%0)" : : "r"(&gdtr_val) : "memory");
     gdt_reload_segments();
     asm volatile("ltr %%ax" : : "a"((uint16_t)SEL_TSS));
+}
+
+void tss_set_kernel_stack(uint64_t rsp0) {
+    tss.rsp0 = rsp0;
 }

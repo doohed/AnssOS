@@ -18,6 +18,7 @@ if ! command -v xorriso >/dev/null 2>&1; then
     exit 1
 fi
 
+./scripts/build-userland.sh
 make -C kernel
 
 # Stage the kernel, Limine's boot config, and Limine's prebuilt UEFI

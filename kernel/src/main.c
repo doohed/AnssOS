@@ -11,10 +11,12 @@
 #include "drivers/virtio/virtio_blk.h"
 #include "drivers/virtio/virtio_gpu.h"
 #include "drivers/virtio/virtio_input.h"
+#include "exec/userland_blobs.h"
 #include "fs/blkfs.h"
 #include "fs/vfs.h"
 #include "mm/heap.h"
 #include "mm/pmm.h"
+#include "mm/vmm.h"
 #include "shell/shell.h"
 
 #include <stddef.h>
@@ -97,6 +99,36 @@ void kmain(void) {
     heap_init();
     kprintf("Heap ready (kmalloc/kfree over the PMM).\n");
 
+    /* VMM smoke test (M10 prep): create a fresh address space, map a
+     * scratch page into it as user-accessible, switch into it, write/
+     * read through that mapping, then switch back to the boot address
+     * space -- proves the per-address-space page-table plumbing works
+     * before anything ever runs in ring 3. */
+    {
+        struct addr_space boot_as = vmm_current_address_space();
+        struct addr_space test_as = vmm_new_address_space();
+
+        uint64_t scratch_phys = pmm_alloc_page();
+        uint64_t scratch_virt = 0x400000;
+        vmm_map(&test_as, scratch_virt, scratch_phys, PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+
+        vmm_switch(&test_as);
+        volatile uint64_t *p = (volatile uint64_t *)scratch_virt;
+        *p = 0xDEADBEEFCAFEBABEull;
+        uint64_t readback = *p;
+        vmm_switch(&boot_as);
+
+        pmm_free_page(scratch_phys);
+
+        if (readback != 0xDEADBEEFCAFEBABEull) {
+            kprintf(
+                "VMM PANIC: address-space smoke test read back 0x%lx, expected something else\n",
+                readback);
+            hcf();
+        }
+        kprintf("VMM self-test OK: per-address-space page tables work\n");
+    }
+
     /* pic_remap() maps the Local APIC's MMIO page (vmm_map_mmio(), see
      * arch/x86_64/pic.c) to relay the legacy PIC's interrupts through
      * it -- needs the PMM (and its own page-table allocations) up
@@ -169,6 +201,19 @@ void kmain(void) {
                 "Skipping M9 (no virtio-blk device) -- filesystem stays in-memory only. "
                 "Boot QEMU with -device virtio-blk-pci for persistence.\n");
         }
+
+        /* M10 self-test fixtures: the hand-rolled userland test payloads
+         * (see userland/, embedded into the kernel image via
+         * exec/userland_blobs.S) get written fresh onto the in-memory VFS
+         * on every boot, so `run hello.bin` / `run crash.bin` always have
+         * something to load without any host-side provisioning step --
+         * same idea as the PMM/VMM self-tests above, just landing on the
+         * filesystem instead of just printing a result. Not persisted to
+         * disk; there's nothing to save here. */
+        vfs_write_bytes(vfs_root(), "hello.bin", hello_elf_start,
+                        (size_t)(hello_elf_end - hello_elf_start));
+        vfs_write_bytes(vfs_root(), "crash.bin", crash_elf_start,
+                        (size_t)(crash_elf_end - crash_elf_start));
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

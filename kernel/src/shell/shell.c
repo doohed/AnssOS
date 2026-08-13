@@ -1,11 +1,13 @@
 #include "shell.h"
 #include "../arch/x86_64/io.h"
+#include "../arch/x86_64/usermode.h"
 #include "../console/fbconsole.h"
 #include "../drivers/pci.h"
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/virtio/virtio_input.h"
+#include "../exec/elf.h"
 #include "../fs/blkfs.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
@@ -47,6 +49,7 @@ static void cmd_ls(const char *args);
 static void cmd_cat(const char *args);
 static void cmd_write(const char *args);
 static void cmd_sync(const char *args);
+static void cmd_run(const char *args);
 
 static const struct builtin BUILTINS[] = {
     {"help", "list commands", cmd_help},
@@ -69,6 +72,7 @@ static const struct builtin BUILTINS[] = {
     {"cat", "cat <file> -- print a file's contents", cmd_cat},
     {"write", "write <file> <text...> -- overwrite a file's contents", cmd_write},
     {"sync", "flush the filesystem to disk now (also happens automatically)", cmd_sync},
+    {"run", "run <path> -- execute a static ELF64 program in ring 3", cmd_run},
 };
 #define BUILTIN_COUNT ((int)(sizeof(BUILTINS) / sizeof(BUILTINS[0])))
 
@@ -451,6 +455,28 @@ static void cmd_sync(const char *args) {
     if (blkfs_save() == 0) {
         kprintf("Filesystem synced.\n");
     }
+}
+
+static void cmd_run(const char *args) {
+    if (args[0] == '\0') {
+        kprintf("usage: run <path>\n");
+        return;
+    }
+
+    struct vnode *node = vfs_resolve(cwd, args);
+    if (node == NULL || node->type != VNODE_FILE) {
+        kprintf("run: %s: no such file\n", args);
+        return;
+    }
+
+    struct usertask task;
+    if (elf_load(node->data, node->size, &task) != 0) {
+        return;
+    }
+
+    int exit_status;
+    enter_usermode(&task, &exit_status); /* sys_exit()/the fault path already reports the result */
+    (void)exit_status;
 }
 
 void shell_run(void) {
