@@ -37,6 +37,22 @@ struct process *process_current(void) {
     return current_process;
 }
 
+/* Frees whichever of `p`'s pending_free_as/pending_free_kstack are
+ * still outstanding (see process.h's own doc comment on struct
+ * process), and clears them. Safe to call unconditionally -- a no-op
+ * when both are already 0, which they are for the common case of a
+ * process that's never exec()'d. */
+static void process_free_pending(struct process *p) {
+    if (p->pending_free_as.pml4_phys != 0) {
+        vmm_free_user_pages(&p->pending_free_as);
+        p->pending_free_as.pml4_phys = 0;
+    }
+    if (p->pending_free_kstack != 0) {
+        kfree((void *)(uintptr_t)p->pending_free_kstack);
+        p->pending_free_kstack = 0;
+    }
+}
+
 struct process *process_find_child(int parent_pid, int pid) {
     if (pid >= 0) {
         struct process *p = process_by_pid(pid);
@@ -93,12 +109,14 @@ int process_fork(struct process *parent, struct interrupt_frame *frame) {
 
     child->task.as = vmm_new_address_space();
     if (vmm_clone_user_pages(&child->task.as, &parent->task.as) != 0) {
+        vmm_free_user_pages(&child->task.as); /* Don't leak the partial clone. */
         child->state = PROC_UNUSED;
         return -1;
     }
 
     uint8_t *kstack = kmalloc(ELF_KERNEL_STACK_SIZE);
     if (kstack == NULL) {
+        vmm_free_user_pages(&child->task.as);
         child->state = PROC_UNUSED;
         return -1;
     }
@@ -143,9 +161,14 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size) {
         return -1;
     }
 
-    /* The old address space/kernel stack are simply abandoned here (no
-     * teardown) -- same accepted leak as everywhere else this project
-     * doesn't free page-table memory back to the PMM yet. */
+    /* The old address space/kernel stack can't be freed *right here* --
+     * this function is still executing on the old kernel stack, and CR3
+     * may still point at the old address space. Stash them as "pending"
+     * instead; process_free_pending() frees them once we're definitely
+     * off both (see its own doc comment). */
+    p->pending_free_as = p->task.as;
+    p->pending_free_kstack = p->task.kernel_stack_top - ELF_KERNEL_STACK_SIZE;
+
     p->task = new_task;
     memcpy(p->task.open_files, saved_files, sizeof(saved_files));
     p->task.cwd = saved_cwd;
@@ -169,6 +192,19 @@ static struct process *pick_next_runnable(void) {
     return NULL;
 }
 
+/* Frees a zombie process's own address space and kernel stack (plus any
+ * still-pending leftovers from an earlier exec() -- see
+ * process_free_pending()) and returns the slot to the pool. Only called
+ * once `p` is confirmed PROC_ZOMBIE, which -- per dispatch()'s own
+ * ordering (arch/x86_64/usermode.c) -- means CR3 and TSS.RSP0 have
+ * already moved off this process before we ever get here. */
+static void reap(struct process *p) {
+    process_free_pending(p);
+    vmm_free_user_pages(&p->task.as);
+    kfree((void *)(uintptr_t)(p->task.kernel_stack_top - ELF_KERNEL_STACK_SIZE));
+    p->state = PROC_UNUSED;
+}
+
 int scheduler_run_until(int wait_pid) {
     struct process *outer_current = current_process;
     int result;
@@ -182,7 +218,7 @@ int scheduler_run_until(int wait_pid) {
             }
             if (target->state == PROC_ZOMBIE) {
                 result = target->exit_status;
-                target->state = PROC_UNUSED;
+                reap(target);
                 goto done;
             }
         } else {
@@ -194,7 +230,7 @@ int scheduler_run_until(int wait_pid) {
                      * process which fork()s a child waits for it before
                      * exiting, so the only zombie a -1 caller should
                      * ever actually witness is its own top-level launch. */
-                    processes[i].state = PROC_UNUSED;
+                    reap(&processes[i]);
                     continue;
                 }
                 if (processes[i].state != PROC_UNUSED) {
@@ -216,6 +252,13 @@ int scheduler_run_until(int wait_pid) {
             asm volatile("sti; hlt");
             continue;
         }
+
+        /* Free anything a previous exec() left pending for this process
+         * -- see process_exec()'s own comment on why it can't free
+         * immediately. We're on the scheduler loop's own stack/address
+         * space right now, definitely off whatever `next` last used, so
+         * this is always safe here. */
+        process_free_pending(next);
 
         next->state = PROC_RUNNING;
         current_process = next;

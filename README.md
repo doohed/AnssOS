@@ -421,22 +421,46 @@ virtio-gpu queue.
       perfectly for the *first* nested dispatch and broke on whatever
       ran after the recursion unwound.
 
+- [x] **M14 — free process memory on exit/exec.** M13 made the M10-era
+      "never free a process's address space or kernel stack" shortcut a
+      real problem: `fork()`/`exec()`/process exit now happen
+      constantly, not once per kernel lifetime. New `vmm_free_user_pages()`
+      (`mm/vmm.c`) is the missing counterpart to `vmm_clone_user_pages()`
+      — the same 4-level user-half walk, freeing each leaf page and
+      every intermediate PT/PD/PDPT table page (never touching the
+      shared higher half) back to the PMM, then the PML4 itself.
+      Reap time (`exec/process.c`'s `scheduler_run_until()`, both the
+      specific-pid and the auto-reap-on-empty paths) frees a zombie's
+      address space and kernel stack immediately — by then `dispatch()`
+      has already switched CR3/`TSS.RSP0` away, so it's provably safe.
+      `exec()` is the one genuinely tricky spot: `process_exec()` runs
+      *while still executing on the old kernel stack* (CR3 hasn't
+      switched away yet either), so freeing either right there would
+      mean freeing memory the CPU is currently using — it stashes them
+      in two new `pending_free_as`/`pending_free_kstack` fields on
+      `struct process` instead, freed by `process_free_pending()` at the
+      start of this same process's *next* dispatch, the first point
+      that's guaranteed safe. `process_fork()`'s own two OOM failure
+      paths got the same treatment, so a failed `fork()` doesn't leak
+      its partial clone either. Verified by running `forktest.bin` 15
+      times in a row and watching `meminfo`: free pages drop once (heap
+      warm-up) then stay *exactly flat* for every subsequent run — the
+      actual signature of bounded memory use, not just a slower leak.
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
 I/O APIC redirection table use, no SMP), a real on-disk filesystem
 format (ext2/FAT/UFS — M9's format above is a whole-tree dump, not an
-incremental one), copy-on-write `fork()`, address-space/page-table
-teardown on `exec()`/process exit (both leak, same as `mm/heap.c`
-already does), `argv`/`envp` for `exec()`, dynamic linking/shared
-libraries, TLS, W^X/NX enforcement, the `SYSCALL`/`SYSRET` MSR fast path
-(`int 0x80` only for now), signals, `O_EXCL`/`rmdir`/`unlink` from
-userland, `cwd` inheritance across `run`, an `init` process/orphan
-reparenting, priority scheduling (Phase B is plain round-robin), and an
-actual musl (or similar) port capable of building arbitrary third-party
-C source — the libc is still hand-written and intentionally small,
-proving the pattern rather than being generally reusable yet. These are
-natural next milestones
+incremental one), copy-on-write `fork()`, `argv`/`envp` for `exec()`,
+dynamic linking/shared libraries, TLS, W^X/NX enforcement, the
+`SYSCALL`/`SYSRET` MSR fast path (`int 0x80` only for now), signals,
+`O_EXCL`/`rmdir`/`unlink` from userland, `cwd` inheritance across `run`,
+an `init` process/orphan reparenting, priority scheduling (Phase B is
+plain round-robin), and an actual musl (or similar) port capable of
+building arbitrary third-party C source — the libc is still hand-
+written and intentionally small, proving the pattern rather than being
+generally reusable yet. These are natural next milestones
 from here.
 
 ## Using the shell interactively

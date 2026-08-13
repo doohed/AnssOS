@@ -38,6 +38,17 @@ struct process {
     uint64_t saved_rsp;
 
     struct usertask task;
+
+    /* A previous exec() (see process_exec()) left this process's *old*
+     * address space/kernel stack behind to free later -- not safe to
+     * free at the moment they're replaced, since process_exec() is
+     * still executing on the old kernel stack when it runs. Freed by
+     * process_free_pending() at the start of this process's next
+     * dispatch (see scheduler_run_until()), once we're definitely off
+     * both. pending_free_as.pml4_phys == 0 / pending_free_kstack == 0
+     * mean "nothing pending." */
+    struct addr_space pending_free_as;
+    uint64_t pending_free_kstack;
 };
 
 /* Parses `image` (a static non-PIE ELF64, see exec/elf.c's elf_load(),

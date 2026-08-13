@@ -68,6 +68,15 @@ void *vmm_phys_to_virt(uint64_t phys);
  * an accepted simplification" pragmatism, see mm/heap.c). */
 int vmm_clone_user_pages(struct addr_space *dst, struct addr_space *src);
 
+/* Counterpart to vmm_clone_user_pages(): frees every present page in
+ * `as`'s user half (leaf pages and every intermediate PT/PD/PDPT table
+ * page), then the PML4 itself, back to the PMM. Only safe to call once
+ * `as` is definitely not the active address space (CR3) and nothing is
+ * currently executing on a kernel stack that assumes it's still mapped
+ * -- see exec/process.c's scheduler_run_until() (reap time) and
+ * process_exec()'s deferred-free handling for where that's guaranteed. */
+void vmm_free_user_pages(struct addr_space *as);
+
 /* Maps `size` bytes of physical memory starting at `phys_addr` (need not
  * be page-aligned) into the kernel's own (currently active) address
  * space as present + writable + uncacheable. Returns a virtual pointer
