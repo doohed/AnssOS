@@ -32,6 +32,7 @@ irq_stub 46
 irq_stub 47
 
 .extern irq_handler
+.extern common_return_from_interrupt
 
 irq_common_stub:
     push %r15
@@ -52,25 +53,7 @@ irq_common_stub:
 
     mov %rsp, %rdi          /* struct interrupt_frame *frame */
     call irq_handler
-
-    pop %rax
-    pop %rbx
-    pop %rcx
-    pop %rdx
-    pop %rsi
-    pop %rdi
-    pop %rbp
-    pop %r8
-    pop %r9
-    pop %r10
-    pop %r11
-    pop %r12
-    pop %r13
-    pop %r14
-    pop %r15
-
-    add $16, %rsp            /* discard vector + error_code */
-    iretq
+    jmp common_return_from_interrupt
 
 .section .rodata
 .global irq_stub_table

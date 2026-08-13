@@ -57,6 +57,17 @@ void vmm_switch(struct addr_space *as);
  * into a user address space via vmm_map(). */
 void *vmm_phys_to_virt(uint64_t phys);
 
+/* fork() support (M13): copies every present page in the user half
+ * (PML4 indices 0-255) of `src` into `dst` -- a full physical copy of
+ * each page (same flags preserved), not copy-on-write. `dst` should
+ * already exist (e.g. via vmm_new_address_space()) with its own higher
+ * half already populated; only the user half is touched here. Returns 0
+ * on success, -1 on a mid-clone allocation failure (the partial clone is
+ * left as-is -- the caller should treat the whole fork as failed and
+ * discard `dst`, matching this project's "leaks on the failure path are
+ * an accepted simplification" pragmatism, see mm/heap.c). */
+int vmm_clone_user_pages(struct addr_space *dst, struct addr_space *src);
+
 /* Maps `size` bytes of physical memory starting at `phys_addr` (need not
  * be page-aligned) into the kernel's own (currently active) address
  * space as present + writable + uncacheable. Returns a virtual pointer

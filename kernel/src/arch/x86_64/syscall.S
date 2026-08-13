@@ -15,6 +15,7 @@ isr_stub_syscall:
     jmp syscall_common_stub
 
 .extern syscall_dispatch
+.extern common_return_from_interrupt
 
 syscall_common_stub:
     push %r15
@@ -35,24 +36,6 @@ syscall_common_stub:
 
     mov %rsp, %rdi          /* struct interrupt_frame *frame */
     call syscall_dispatch
-
-    pop %rax
-    pop %rbx
-    pop %rcx
-    pop %rdx
-    pop %rsi
-    pop %rdi
-    pop %rbp
-    pop %r8
-    pop %r9
-    pop %r10
-    pop %r11
-    pop %r12
-    pop %r13
-    pop %r14
-    pop %r15
-
-    add $16, %rsp            /* discard vector + error_code */
-    iretq
+    jmp common_return_from_interrupt
 
 .section .note.GNU-stack,"",@progbits

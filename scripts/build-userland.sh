@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the tiny hand-rolled userland test payloads (hello, crash,
-# malloctest, filetest) used to prove the ring-3 pipeline end-to-end, and
+# malloctest, filetest, dirtest, forktest, forkchild, preempttest) used
+# to prove the ring-3 pipeline end-to-end, and
 # drops their built ELF binaries where kernel/src/exec/userland_blobs.S
 # expects to find them (via .incbin) so they get embedded directly into
 # the kernel image -- see main.c's self-test wiring for how they land on
@@ -40,5 +41,9 @@ build_program hello hello.c
 build_program crash crash.c
 build_program malloctest malloctest.c
 build_program filetest filetest.c
+build_program dirtest dirtest.c
+build_program forktest forktest.c
+build_program forkchild forkchild.c
+build_program preempttest preempttest.c
 
-echo "Built userland/{hello,crash,malloctest,filetest}.elf"
+echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest}.elf"

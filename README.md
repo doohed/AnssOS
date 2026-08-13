@@ -345,19 +345,98 @@ virtio-gpu queue.
       confirming the *shell* sees the change the ring-3 task made,
       proving the syscall reaches the real VFS, not a copy).
 
+- [x] **M12 — `O_CREAT`, `mkdir`, and a per-task working directory.**
+      M11's file I/O only worked against files that already existed,
+      always resolved against the VFS root. `struct usertask`
+      (`arch/x86_64/usermode.h`) gained a `cwd` field (always starts at
+      `/` — a task doesn't inherit the launching shell's `cwd`), and two
+      new Linux-numbered syscalls: `chdir` (80) and `mkdir` (83). `open`
+      now accepts `O_CREAT` (`0x40`, Linux's real value) — if the path
+      doesn't resolve, it creates the file via `vfs_create_file()` first
+      — and resolves every path against `task->cwd` instead of always
+      the root, so relative paths work the same way they already did in
+      the shell's own `cwd` global. New test payload `dirtest.bin`
+      proves all three together: `mkdir`s a directory, `chdir`s into it,
+      `open`s a brand-new file there by a *relative* name with
+      `O_CREAT`, writes and reads it back — verified by `ls`/`cat`ing it
+      from the shell afterward and seeing the real thing the task
+      created, not a private copy.
+
+- [x] **M13 — a scheduler, `fork`/`exec`/`wait`, and real preemption.**
+      Everything before this milestone was strictly one process at a
+      time: `run` blocked the shell synchronously on a single static
+      task. This is the biggest architectural jump since M10 itself,
+      shipped in two halves.
+      **Phase A — process table + cooperative multitasking.** New
+      `exec/process.c/.h`: a fixed 16-slot `struct process` table
+      (pid/parent pid/state/exit status, wrapping the same `struct
+      usertask` M10 already had), and three new Linux-numbered syscalls
+      — `fork` (57, full page-by-page address-space copy via new
+      `vmm_clone_user_pages()`, no copy-on-write), `execve` (59,
+      simplified single-arg `exec(path)`, replaces a process's image in
+      place, same pid/open files/cwd), `wait4`/`getpid` (61/39,
+      simplified `waitpid(pid, status)`). `wait()` blocks via an
+      ordinary *recursive* call into the scheduler (`scheduler_run_until()`
+      runs other processes — including the target, once picked — until
+      it exits) rather than a suspend/resume mechanism; no distinct
+      "blocked" state needed at all in Phase A. `shell.c`'s `run` spawns
+      a process and calls `scheduler_run_until(-1)`, blocking until every
+      process that launch (transitively, via `fork()`) spawned has
+      exited — there's no init process to reparent orphans to yet, so
+      the convention is that a process which forks a child waits for it
+      before exiting.
+      **Phase B — real preemption.** `idt.c`'s `irq_handler()` now
+      recognizes the timer (IRQ0) interrupting ring-3 code and hands the
+      CPU to a different runnable process instead of just returning —
+      reusing the *same* resume primitive Phase A's `fork()` already
+      needed (`arch_resume_process()`, added to `usermode.S`): a
+      preempted process's full register state is already sitting on its
+      own kernel stack exactly where the interrupt frame points, so
+      "pausing" it costs nothing more than remembering that address.
+      `isr.S`/`syscall.S`/`irq.S`'s previously-duplicated pop-registers-
+      then-`iretq` tail is now one shared `common_return_from_interrupt`
+      label all three (plus `arch_resume_process`) jump into. New test
+      payload `preempttest.bin` proves it unambiguously: two forked
+      children each spin a tight busy loop with *no* voluntary yield
+      point at all, printing their own tag — the output interleaves
+      (`AAABBBBBAAAABBBB...`) instead of running as two clean sequential
+      blocks, which is only possible if the timer is genuinely
+      interrupting one mid-flight and resuming the other.
+      **Two real bugs found building this, both the same species:**
+      state that's fine for exactly one task in flight breaks the moment
+      a second one can be "in progress" underneath it. `wait()`'s
+      recursive scheduler call dispatches a *different* process while
+      the waiting one is still mid-syscall (not done, just not
+      currently running) — this broke `TSS.RSP0` (left pointing at
+      whichever process most recently ran, so the *outer* process's next
+      syscall built its interrupt frame on the wrong kernel stack) and
+      the kernel-side dispatch-resume bookkeeping (a single shared save
+      slot, overwritten by the nested dispatch, stranding the outer
+      process's real resume point) — both fixed by making the relevant
+      state per-process (`kernel_resume` moved into `struct usertask`)
+      or explicitly saved/restored around nested calls (`TSS.RSP0`,
+      `usermode.c`'s `current_task`), the same `outer_current` pattern
+      `process.c`'s own scheduler loop already used for itself. Caught
+      by the exact symptom that pattern predicts: things worked
+      perfectly for the *first* nested dispatch and broke on whatever
+      ran after the recursion unwound.
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
-path above — everything still polls), APIC/IOAPIC beyond the minimal
-LINT0 passthrough above (no I/O APIC redirection table use, no SMP), a
-real on-disk filesystem format (ext2/FAT/UFS — M9's format above is a
-whole-tree dump, not an incremental one), `fork()`/multiple concurrent
-processes, any preemptive scheduling, dynamic linking/shared libraries,
-TLS, W^X/NX enforcement, the `SYSCALL`/`SYSRET` MSR fast path (`int
-0x80` only for now), signals, `O_CREAT`/directory creation from
-userland, a per-task working directory, and an actual musl (or similar)
-port capable of building arbitrary third-party C source — M11's libc is
-still hand-written and intentionally small, proving the pattern rather
-than being generally reusable yet. These are natural next milestones
+path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
+I/O APIC redirection table use, no SMP), a real on-disk filesystem
+format (ext2/FAT/UFS — M9's format above is a whole-tree dump, not an
+incremental one), copy-on-write `fork()`, address-space/page-table
+teardown on `exec()`/process exit (both leak, same as `mm/heap.c`
+already does), `argv`/`envp` for `exec()`, dynamic linking/shared
+libraries, TLS, W^X/NX enforcement, the `SYSCALL`/`SYSRET` MSR fast path
+(`int 0x80` only for now), signals, `O_EXCL`/`rmdir`/`unlink` from
+userland, `cwd` inheritance across `run`, an `init` process/orphan
+reparenting, priority scheduling (Phase B is plain round-robin), and an
+actual musl (or similar) port capable of building arbitrary third-party
+C source — the libc is still hand-written and intentionally small,
+proving the pattern rather than being generally reusable yet. These are
+natural next milestones
 from here.
 
 ## Using the shell interactively

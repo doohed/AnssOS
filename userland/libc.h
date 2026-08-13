@@ -11,9 +11,16 @@ long brk(unsigned long new_end);
 int open(const char *path, int flags);
 int close(int fd);
 long lseek(int fd, long offset, int whence);
+int chdir(const char *path);
+int mkdir(const char *path);
+int fork(void);
+int execve(const char *path);
+int waitpid(int pid, int *status);
+int getpid(void);
 
 #define O_RDONLY 0
 #define O_WRONLY 1
+#define O_CREAT 0x40
 
 #define SEEK_SET 0
 #define SEEK_CUR 1

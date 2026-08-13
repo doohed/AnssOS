@@ -9,23 +9,26 @@
 
 .text
 
-/* void arch_enter_usermode(uint64_t entry, uint64_t user_rsp);
- * (SysV: entry in rdi, user_rsp in rsi.)
+/* void arch_enter_usermode(uint64_t entry, uint64_t user_rsp, uint64_t *save_area);
+ * (SysV: entry in rdi, user_rsp in rsi, save_area in rdx.)
  *
- * Saves the current (kernel) callee-saved registers and rsp -- a
- * hand-rolled setjmp -- then builds an iretq frame and jumps into ring 3.
- * Never returns directly to its caller; the only way back is
+ * Saves the current (kernel) callee-saved registers and rsp into
+ * `save_area` (7 quads: rbx, rbp, r12, r13, r14, r15, rsp -- a
+ * hand-rolled setjmp, one slot per task, see usermode.h's own comment on
+ * struct usertask.kernel_resume for why this can't be a single shared
+ * slot) -- then builds an iretq frame and jumps into ring 3. Never
+ * returns directly to its caller; the only way back is
  * arch_return_to_kernel's `ret`, landing exactly at this call's return
  * address as if arch_enter_usermode had returned normally. */
 .global arch_enter_usermode
 arch_enter_usermode:
-    mov %rbx, kernel_resume_regs+0(%rip)
-    mov %rbp, kernel_resume_regs+8(%rip)
-    mov %r12, kernel_resume_regs+16(%rip)
-    mov %r13, kernel_resume_regs+24(%rip)
-    mov %r14, kernel_resume_regs+32(%rip)
-    mov %r15, kernel_resume_regs+40(%rip)
-    mov %rsp, kernel_resume_regs+48(%rip) /* points at our own return address right now */
+    mov %rbx, 0(%rdx)
+    mov %rbp, 8(%rdx)
+    mov %r12, 16(%rdx)
+    mov %r13, 24(%rdx)
+    mov %r14, 32(%rdx)
+    mov %r15, 40(%rdx)
+    mov %rsp, 48(%rdx) /* points at our own return address right now */
 
     /* iretq pops, in order: rip, cs, rflags, rsp, ss -- so push in the
      * reverse order. */
@@ -36,27 +39,57 @@ arch_enter_usermode:
     pushq %rdi           /* entry */
     iretq
 
-/* void arch_return_to_kernel(int status);
+/* void arch_return_to_kernel(int status, uint64_t *save_area);
+ * (SysV: status in edi, save_area in rsi.)
  *
- * Restores the context arch_enter_usermode saved and resumes it via
- * `ret` -- from the perspective of whoever called arch_enter_usermode,
- * it just returned. Never returns to its own caller. */
+ * Restores the context arch_enter_usermode/arch_resume_process saved
+ * into `save_area` and resumes it via `ret` -- from the perspective of
+ * whoever called them, it just returned. Never returns to its own
+ * caller. */
 .global arch_return_to_kernel
 arch_return_to_kernel:
     mov %edi, kernel_resume_status(%rip)
-    mov kernel_resume_regs+0(%rip), %rbx
-    mov kernel_resume_regs+8(%rip), %rbp
-    mov kernel_resume_regs+16(%rip), %r12
-    mov kernel_resume_regs+24(%rip), %r13
-    mov kernel_resume_regs+32(%rip), %r14
-    mov kernel_resume_regs+40(%rip), %r15
-    mov kernel_resume_regs+48(%rip), %rsp
+    mov 0(%rsi), %rbx
+    mov 8(%rsi), %rbp
+    mov 16(%rsi), %r12
+    mov 24(%rsi), %r13
+    mov 32(%rsi), %r14
+    mov 40(%rsi), %r15
+    mov 48(%rsi), %rsp
     ret
+
+/* void arch_resume_process(uint64_t saved_rsp, uint64_t *save_area);
+ * (SysV: saved_rsp in rdi, save_area in rsi.)
+ *
+ * Counterpart to arch_enter_usermode for a process that has already run
+ * at least once (M13): rather than building a fresh iretq frame at an
+ * entry point, resumes exactly where it left off. `saved_rsp` is the
+ * value %rsp held at the moment this process's execution was last
+ * captured (by fork() building an initial frame for its child, or --
+ * once preemption exists -- by a timer interrupt) -- i.e. the address of
+ * its own already-populated struct interrupt_frame, sitting on its own
+ * kernel stack exactly as isr_common_stub/syscall_common_stub left it.
+ * No register state needs copying anywhere; setting %rsp there and
+ * falling into the same pop-registers-then-iretq tail those stubs use is
+ * enough. Saves the current (kernel) context into `save_area` first,
+ * exactly like arch_enter_usermode -- the only way back is the same
+ * arch_return_to_kernel() `ret`. */
+.extern common_return_from_interrupt
+.global arch_resume_process
+arch_resume_process:
+    mov %rbx, 0(%rsi)
+    mov %rbp, 8(%rsi)
+    mov %r12, 16(%rsi)
+    mov %r13, 24(%rsi)
+    mov %r14, 32(%rsi)
+    mov %r15, 40(%rsi)
+    mov %rsp, 48(%rsi)
+
+    mov %rdi, %rsp
+    jmp common_return_from_interrupt
 
 .section .bss
 .align 8
-kernel_resume_regs: /* rbx, rbp, r12, r13, r14, r15, rsp -- 7 quads */
-    .skip 8*7
 .global kernel_resume_status
 kernel_resume_status:
     .skip 4

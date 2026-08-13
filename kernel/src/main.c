@@ -211,7 +211,8 @@ void kmain(void) {
          * instead of just printing a result. Not persisted to disk;
          * there's nothing to save here. filetest.txt is filetest.bin's
          * own fixture -- a known file for it to open/read/write/lseek
-         * against. */
+         * against. dirtest.bin needs no fixture -- it creates its own
+         * directory and file via mkdir()/O_CREAT. */
         vfs_write_bytes(vfs_root(), "hello.bin", hello_elf_start,
                         (size_t)(hello_elf_end - hello_elf_start));
         vfs_write_bytes(vfs_root(), "crash.bin", crash_elf_start,
@@ -221,6 +222,14 @@ void kmain(void) {
         vfs_write_bytes(vfs_root(), "filetest.bin", filetest_elf_start,
                         (size_t)(filetest_elf_end - filetest_elf_start));
         vfs_write_file(vfs_root(), "filetest.txt", "hello file test\n", 0);
+        vfs_write_bytes(vfs_root(), "dirtest.bin", dirtest_elf_start,
+                        (size_t)(dirtest_elf_end - dirtest_elf_start));
+        vfs_write_bytes(vfs_root(), "forktest.bin", forktest_elf_start,
+                        (size_t)(forktest_elf_end - forktest_elf_start));
+        vfs_write_bytes(vfs_root(), "forkchild.bin", forkchild_elf_start,
+                        (size_t)(forkchild_elf_end - forkchild_elf_start));
+        vfs_write_bytes(vfs_root(), "preempttest.bin", preempttest_elf_start,
+                        (size_t)(preempttest_elf_end - preempttest_elf_start));
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

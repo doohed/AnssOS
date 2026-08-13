@@ -2,6 +2,7 @@
 #include "pic.h"
 #include "usermode.h"
 #include "../../drivers/serial.h"
+#include "../../exec/process.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -91,16 +92,23 @@ static const char *exception_name(uint64_t vector) {
 /* Called from isr_common_stub with rdi pointing at the saved register/
  * frame state. A fault taken from ring 3 (frame->cs & 3 == 3 -- can only
  * happen once a user task is actually running, via enter_usermode())
- * doesn't bring down the kernel: it ends that task and returns control
- * to whoever called enter_usermode(), same as an explicit exit syscall.
- * There's no process table yet to distinguish multiple tasks, so this is
- * deliberately simple -- any user-mode fault ends *the* running task. A
- * fault from ring 0 remains fatal (a genuine kernel bug, not recoverable
- * until we have real fault handling, e.g. page fault -> demand paging). */
+ * doesn't bring down the kernel: it ends *that* process (marked
+ * PROC_ZOMBIE, same as an explicit exit syscall -- see exec/syscall.c's
+ * SYS_exit -- so the scheduler correctly reaps it and a top-level
+ * scheduler_run_until(-1) caller, e.g. the shell's `run`, doesn't hang
+ * waiting for a slot that will never become a zombie any other way) and
+ * returns control to the scheduler. A fault from ring 0 remains fatal (a
+ * genuine kernel bug, not recoverable until we have real fault handling,
+ * e.g. page fault -> demand paging). */
 void isr_handler(struct interrupt_frame *frame) {
     if ((frame->cs & 3) == 3) {
         kprintf("\nuser program crashed: %s (vector %lu, error 0x%lx) at rip=0x%lx\n",
                 exception_name(frame->vector), frame->vector, frame->error_code, frame->rip);
+        struct process *me = process_current();
+        if (me != NULL) {
+            me->state = PROC_ZOMBIE;
+            me->exit_status = -1;
+        }
         return_to_kernel(-1);
     }
 
@@ -130,13 +138,36 @@ void irq_register(uint8_t irq, void (*handler)(void)) {
 /* Called from irq_common_stub. frame->vector is 32+irq (see pic.h) --
  * dispatch to whatever driver registered that line, then EOI. A handler
  * with nothing registered (including genuinely spurious IRQs) is just a
- * silent EOI, not an error. */
+ * silent EOI, not an error.
+ *
+ * M13 Phase B preemption: if this was the timer (IRQ0) interrupting
+ * ring-3 code, hand the CPU to a different runnable process instead of
+ * just returning to the one that was running. This happens *after* the
+ * normal dispatch/EOI above -- pit.c's own registered handler still
+ * ticks pit_ticks() every time regardless of whether a preemption
+ * follows, and EOI must happen before we potentially abandon this
+ * interrupt entirely (skipping it would leave the PIC thinking IRQ0 is
+ * still in service, blocking further timer interrupts). The process
+ * being preempted isn't "done" the way exit()/a crash is -- its full
+ * register state is already sitting on its own kernel stack exactly
+ * where `frame` points (see usermode.S's arch_resume_process), so
+ * resuming it later needs nothing more than remembering that address
+ * and marking it PROC_RUNNABLE again. */
 void irq_handler(struct interrupt_frame *frame) {
     uint64_t irq = frame->vector - PIC_IRQ_BASE;
     if (irq < 16 && irq_handlers[irq] != NULL) {
         irq_handlers[irq]();
     }
     pic_send_eoi((uint8_t)irq);
+
+    if (frame->vector == PIC_IRQ_BASE && (frame->cs & 3) == 3) {
+        struct process *me = process_current();
+        if (me != NULL) {
+            me->saved_rsp = (uint64_t)frame;
+            me->state = PROC_RUNNABLE;
+            return_to_kernel(0); /* noreturn -- lands back in the scheduler loop */
+        }
+    }
 }
 
 void idt_init(void) {

@@ -84,6 +84,51 @@ void *vmm_phys_to_virt(uint64_t phys) {
     return table_virt(phys);
 }
 
+int vmm_clone_user_pages(struct addr_space *dst, struct addr_space *src) {
+    uint64_t *src_pml4 = table_virt(src->pml4_phys);
+
+    for (uint64_t i4 = 0; i4 < PAGE_TABLE_ENTRIES / 2; i4++) {
+        if (!(src_pml4[i4] & PAGE_PRESENT)) {
+            continue;
+        }
+        uint64_t *src_pdpt = table_virt(src_pml4[i4] & PAGE_ADDR_MASK);
+
+        for (uint64_t i3 = 0; i3 < PAGE_TABLE_ENTRIES; i3++) {
+            if (!(src_pdpt[i3] & PAGE_PRESENT)) {
+                continue;
+            }
+            uint64_t *src_pd = table_virt(src_pdpt[i3] & PAGE_ADDR_MASK);
+
+            for (uint64_t i2 = 0; i2 < PAGE_TABLE_ENTRIES; i2++) {
+                if (!(src_pd[i2] & PAGE_PRESENT)) {
+                    continue;
+                }
+                uint64_t *src_pt = table_virt(src_pd[i2] & PAGE_ADDR_MASK);
+
+                for (uint64_t i1 = 0; i1 < PAGE_TABLE_ENTRIES; i1++) {
+                    if (!(src_pt[i1] & PAGE_PRESENT)) {
+                        continue;
+                    }
+
+                    uint64_t src_phys = src_pt[i1] & PAGE_ADDR_MASK;
+                    uint64_t flags = src_pt[i1] & 0xFFFull;
+
+                    uint64_t dst_phys = pmm_alloc_page();
+                    if (dst_phys == 0) {
+                        return -1;
+                    }
+                    memcpy(table_virt(dst_phys), table_virt(src_phys), PMM_PAGE_SIZE);
+
+                    uint64_t virt = (i4 << 39) | (i3 << 30) | (i2 << 21) | (i1 << 12);
+                    vmm_map(dst, virt, dst_phys, flags);
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
 volatile void *vmm_map_mmio(uint64_t phys_addr, uint64_t size) {
     uint64_t page_phys = phys_addr & ~(uint64_t)(PMM_PAGE_SIZE - 1);
     uint64_t page_offset = phys_addr - page_phys;

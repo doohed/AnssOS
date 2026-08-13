@@ -75,7 +75,16 @@ isr_common_stub:
 
     mov %rsp, %rdi          /* struct interrupt_frame *frame */
     call isr_handler
+    jmp common_return_from_interrupt
 
+/* Shared by isr_common_stub/syscall_common_stub above/in syscall.S, and
+ * by arch_resume_process (usermode.S) -- restoring a process's saved
+ * %rsp and falling in here is exactly how a preempted/forked/blocked
+ * process resumes, since its full register state is already sitting on
+ * its own kernel stack in this exact layout (see usermode.S's own
+ * comment on arch_resume_process for why no separate copy is needed). */
+.global common_return_from_interrupt
+common_return_from_interrupt:
     pop %rax
     pop %rbx
     pop %rcx

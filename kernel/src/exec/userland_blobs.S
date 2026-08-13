@@ -1,8 +1,9 @@
-/* Embeds the built hello/crash/malloctest/filetest userland test
- * payloads (see scripts/build-userland.sh, which drops their built ELF
- * bytes at <name>.elf.bin right next to this file before the kernel
- * itself is built) directly into the kernel image, so main.c's self-test
- * wiring can write them onto the VFS without any separate host-side
+/* Embeds the built hello/crash/malloctest/filetest/dirtest/forktest/
+ * forkchild/preempttest userland test payloads (see
+ * scripts/build-userland.sh, which drops their built ELF bytes at
+ * <name>.elf.bin right next to this file before the kernel itself is
+ * built) directly into the kernel image, so main.c's self-test wiring
+ * can write them onto the VFS without any separate host-side
  * provisioning step. */
 
 .section .rodata
@@ -30,5 +31,29 @@ malloctest_elf_end:
 filetest_elf_start:
 .incbin "src/exec/filetest.elf.bin"
 filetest_elf_end:
+
+.global dirtest_elf_start
+.global dirtest_elf_end
+dirtest_elf_start:
+.incbin "src/exec/dirtest.elf.bin"
+dirtest_elf_end:
+
+.global forktest_elf_start
+.global forktest_elf_end
+forktest_elf_start:
+.incbin "src/exec/forktest.elf.bin"
+forktest_elf_end:
+
+.global forkchild_elf_start
+.global forkchild_elf_end
+forkchild_elf_start:
+.incbin "src/exec/forkchild.elf.bin"
+forkchild_elf_end:
+
+.global preempttest_elf_start
+.global preempttest_elf_end
+preempttest_elf_start:
+.incbin "src/exec/preempttest.elf.bin"
+preempttest_elf_end:
 
 .section .note.GNU-stack,"",@progbits

@@ -38,3 +38,34 @@ int close(int fd) {
 long lseek(int fd, long offset, int whence) {
     return syscall3(8, fd, offset, whence);
 }
+
+int chdir(const char *path) {
+    return (int)syscall3(80, (long)(unsigned long)path, 0, 0);
+}
+
+int mkdir(const char *path) {
+    return (int)syscall3(83, (long)(unsigned long)path, 0, 0);
+}
+
+/* fork()'s "returns twice" semantics fall out of this being an ordinary
+ * function call with no special handling needed here at all: the kernel
+ * builds the child's very first resume to look exactly like it's
+ * returning from this same syscall3(57, ...) call too, with rax=0
+ * already baked in (see kernel/src/exec/process.c's process_fork()) --
+ * from this function's own perspective, it's just a normal syscall that
+ * happens to be "returned into" twice, once for each process. */
+int fork(void) {
+    return (int)syscall3(57, 0, 0, 0);
+}
+
+int execve(const char *path) {
+    return (int)syscall3(59, (long)(unsigned long)path, 0, 0);
+}
+
+int waitpid(int pid, int *status) {
+    return (int)syscall3(61, pid, (long)(unsigned long)status, 0);
+}
+
+int getpid(void) {
+    return (int)syscall3(39, 0, 0, 0);
+}

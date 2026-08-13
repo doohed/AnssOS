@@ -1,13 +1,12 @@
 #include "shell.h"
 #include "../arch/x86_64/io.h"
-#include "../arch/x86_64/usermode.h"
 #include "../console/fbconsole.h"
 #include "../drivers/pci.h"
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/virtio/virtio_input.h"
-#include "../exec/elf.h"
+#include "../exec/process.h"
 #include "../fs/blkfs.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
@@ -469,14 +468,16 @@ static void cmd_run(const char *args) {
         return;
     }
 
-    struct usertask task;
-    if (elf_load(node->data, node->size, &task) != 0) {
+    if (process_spawn(node->data, node->size, KERNEL_PARENT_PID) < 0) {
         return;
     }
 
-    int exit_status;
-    enter_usermode(&task, &exit_status); /* sys_exit()/the fault path already reports the result */
-    (void)exit_status;
+    /* Blocks until every process this launch (transitively, via
+     * fork()) spawned has exited -- not just the one PID -- since
+     * there's no init process to reparent orphans to yet (see
+     * exec/process.h). sys_exit()/the fault path already report each
+     * one's own result as it happens. */
+    scheduler_run_until(-1);
 }
 
 void shell_run(void) {

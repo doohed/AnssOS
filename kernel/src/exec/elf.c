@@ -1,6 +1,7 @@
 #include "elf.h"
 #include "../arch/x86_64/usermode.h"
 #include "../drivers/serial.h"
+#include "../fs/vfs.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
 #include "../mm/pmm.h"
@@ -48,7 +49,6 @@ struct __attribute__((packed)) elf64_phdr {
  * around 0x400000). */
 #define USER_STACK_TOP 0x0000700000000000ull
 #define USER_STACK_PAGES 4 /* 16 KiB */
-#define KERNEL_STACK_SIZE (16 * 1024)
 
 int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
     memset(out, 0, sizeof(*out)); /* open_files[].vnode == NULL (free) for every slot. */
@@ -134,7 +134,7 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
      * is fine, no user mapping needed, and it's already reachable from
      * every address space since the HHDM is part of the shared higher
      * half every vmm_new_address_space() copies in. */
-    uint8_t *kernel_stack = kmalloc(KERNEL_STACK_SIZE);
+    uint8_t *kernel_stack = kmalloc(ELF_KERNEL_STACK_SIZE);
     if (kernel_stack == NULL) {
         kprintf("elf: out of memory for the kernel stack\n");
         return -1;
@@ -146,9 +146,10 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
 
     out->entry = eh->e_entry;
     out->user_stack_top = USER_STACK_TOP;
-    out->kernel_stack_top = (uint64_t)(uintptr_t)(kernel_stack + KERNEL_STACK_SIZE);
+    out->kernel_stack_top = (uint64_t)(uintptr_t)(kernel_stack + ELF_KERNEL_STACK_SIZE);
     out->as = as;
     out->heap_start = heap_base;
     out->heap_end = heap_base; /* Zero-size until the first brk(). */
+    out->cwd = vfs_root();
     return 0;
 }

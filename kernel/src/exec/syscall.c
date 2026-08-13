@@ -8,6 +8,7 @@
 #include "../mm/heap.h"
 #include "../mm/pmm.h"
 #include "../mm/vmm.h"
+#include "process.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,12 @@
 #define SYS_close 3
 #define SYS_lseek 8
 #define SYS_brk 12
+#define SYS_getpid 39
+#define SYS_chdir 80
+#define SYS_mkdir 83
+#define SYS_fork 57
+#define SYS_execve 59
+#define SYS_wait4 61
 #define SYS_exit 60
 
 /* A task's brk-managed heap never grows past this many bytes past
@@ -30,6 +37,7 @@
 
 #define O_RDONLY 0
 #define O_WRONLY 1
+#define O_CREAT 0x40
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -59,11 +67,19 @@ static struct open_file *open_file_for(int fd) {
 
 static int64_t sys_open_impl(const char *path, int flags) {
     struct usertask *task = usermode_current_task();
-    if (task == NULL || !user_ptr_ok(path, 1) || (flags != O_RDONLY && flags != O_WRONLY)) {
+    int access_mode = flags & ~O_CREAT;
+    if (task == NULL || !user_ptr_ok(path, 1) ||
+        (access_mode != O_RDONLY && access_mode != O_WRONLY)) {
         return -1;
     }
 
-    struct vnode *node = vfs_resolve(vfs_root(), path);
+    struct vnode *node = vfs_resolve(task->cwd, path);
+    if (node == NULL && (flags & O_CREAT)) {
+        if (vfs_create_file(task->cwd, path) != 0) {
+            return -1;
+        }
+        node = vfs_resolve(task->cwd, path);
+    }
     if (node == NULL || node->type != VNODE_FILE) {
         return -1;
     }
@@ -72,7 +88,7 @@ static int64_t sys_open_impl(const char *path, int flags) {
         if (task->open_files[i].vnode == NULL) {
             task->open_files[i].vnode = node;
             task->open_files[i].offset = 0;
-            task->open_files[i].writable = (flags == O_WRONLY);
+            task->open_files[i].writable = (access_mode == O_WRONLY);
             return 3 + i;
         }
     }
@@ -86,6 +102,27 @@ static int64_t sys_close_impl(int fd) {
     }
     f->vnode = NULL;
     return 0;
+}
+
+static int64_t sys_chdir_impl(const char *path) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || !user_ptr_ok(path, 1)) {
+        return -1;
+    }
+    struct vnode *node = vfs_resolve(task->cwd, path);
+    if (node == NULL || node->type != VNODE_DIR) {
+        return -1;
+    }
+    task->cwd = node;
+    return 0;
+}
+
+static int64_t sys_mkdir_impl(const char *path) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || !user_ptr_ok(path, 1)) {
+        return -1;
+    }
+    return vfs_mkdir(task->cwd, path) == 0 ? 0 : -1;
 }
 
 static int64_t sys_lseek_impl(int fd, int64_t offset, int whence) {
@@ -246,6 +283,66 @@ static int64_t sys_brk_impl(uint64_t new_end) {
     return (int64_t)task->heap_end;
 }
 
+static int64_t sys_getpid_impl(void) {
+    struct process *p = process_current();
+    return p != NULL ? p->pid : -1;
+}
+
+static int64_t sys_fork_impl(struct interrupt_frame *frame) {
+    struct process *me = process_current();
+    if (me == NULL) {
+        return -1;
+    }
+    return process_fork(me, frame);
+}
+
+/* Simplified single-arg exec(path) -- no argv/envp yet. Resolves `path`
+ * against the calling process' own cwd, reads the whole file (reusing
+ * the same vnode->data/size access pattern as elf.c/blkfs.c), and hands
+ * it to process_exec(). Never returns on success -- return_to_kernel()
+ * abandons the old program's execution entirely, same as exit(). */
+static int64_t sys_execve_impl(const char *path) {
+    struct process *me = process_current();
+    if (me == NULL || !user_ptr_ok(path, 1)) {
+        return -1;
+    }
+
+    struct vnode *node = vfs_resolve(me->task.cwd, path);
+    if (node == NULL || node->type != VNODE_FILE) {
+        return -1;
+    }
+
+    if (process_exec(me, node->data, node->size) != 0) {
+        return -1;
+    }
+    return_to_kernel(0);
+}
+
+/* Simplified waitpid(pid, status_ptr) -- no options, no WNOHANG. Blocks
+ * (via an ordinary *recursive* call into scheduler_run_until(), running
+ * other processes -- including the target, once picked -- until it
+ * exits) rather than the timer-driven suspend/resume M13's Phase B
+ * preemption uses; see process.h's own doc comment on why a plain
+ * recursive call is sufficient and correct here. */
+static int64_t sys_wait_impl(int pid, int *status_ptr) {
+    struct process *me = process_current();
+    if (me == NULL) {
+        return -1;
+    }
+
+    struct process *target = process_find_child(me->pid, pid);
+    if (target == NULL) {
+        return -1;
+    }
+
+    int target_pid = target->pid;
+    int status = scheduler_run_until(target_pid);
+    if (status_ptr != NULL && user_ptr_ok(status_ptr, sizeof(int))) {
+        *status_ptr = status;
+    }
+    return target_pid;
+}
+
 void syscall_dispatch(struct interrupt_frame *frame) {
     uint64_t number = frame->rax;
     int64_t result;
@@ -266,12 +363,37 @@ void syscall_dispatch(struct interrupt_frame *frame) {
         case SYS_lseek:
             result = sys_lseek_impl((int)frame->rdi, (int64_t)frame->rsi, (int)frame->rdx);
             break;
+        case SYS_chdir:
+            result = sys_chdir_impl((const char *)frame->rdi);
+            break;
+        case SYS_mkdir:
+            result = sys_mkdir_impl((const char *)frame->rdi);
+            break;
         case SYS_brk:
             result = sys_brk_impl((uint64_t)frame->rdi);
             break;
-        case SYS_exit:
-            kprintf("\nuser program exited with code %d\n", (int)frame->rdi);
-            return_to_kernel((int)frame->rdi);
+        case SYS_getpid:
+            result = sys_getpid_impl();
+            break;
+        case SYS_fork:
+            result = sys_fork_impl(frame);
+            break;
+        case SYS_execve:
+            result = sys_execve_impl((const char *)frame->rdi);
+            break; /* only reached on failure -- success never returns */
+        case SYS_wait4:
+            result = sys_wait_impl((int)frame->rdi, (int *)frame->rsi);
+            break;
+        case SYS_exit: {
+            struct process *me = process_current();
+            int code = (int)frame->rdi;
+            kprintf("\nprocess %d exited with code %d\n", me != NULL ? me->pid : -1, code);
+            if (me != NULL) {
+                me->state = PROC_ZOMBIE;
+                me->exit_status = code;
+            }
+            return_to_kernel(code);
+        }
         default:
             result = -1;
             break;

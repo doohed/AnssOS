@@ -4,8 +4,8 @@ kernel/src/**/*.o
 kernel/src/**/*.d
 kernel/src/exec/*.elf.bin
 
-# Userland (M10 test payload) build output
-userland/*.o
+# Userland (test payload) build output
+userland/**/*.o
 userland/*.elf
 
 # Root build output
