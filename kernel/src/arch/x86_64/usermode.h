@@ -1,6 +1,7 @@
 #ifndef ARCH_X86_64_USERMODE_H
 #define ARCH_X86_64_USERMODE_H
 
+#include "../../drivers/tty.h"
 #include "../../fs/vfs.h"
 #include "../../mm/vmm.h"
 
@@ -34,6 +35,15 @@ struct usertask {
     uint64_t heap_end;
     struct open_file open_files[MAX_OPEN_FILES];
     struct vnode *cwd;
+
+    /* This task's console terminal mode (see drivers/tty.h) -- defaults
+     * set by exec/elf.c's elf_load() to today's actual behavior
+     * (ICANON|ECHO, VMIN=1/VTIME=0), queryable/settable via the
+     * TCGETS/TCSETS ioctl() requests (exec/syscall.c). Preserved across
+     * exec() (exec/process.c's process_exec()) and inherited by fork()
+     * -- real Unix semantics: terminal settings belong to the terminal,
+     * not the program running on it. */
+    struct k_termios termios;
 
     /* Where arch_enter_usermode()/arch_resume_process() (usermode.S)
      * save this *specific* task's kernel-side resume context (callee-

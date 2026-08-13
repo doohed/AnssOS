@@ -3,6 +3,8 @@
  * syscall.c). userland/libc/*.c builds the rest of the M11 libc
  * (malloc, printf, string.h) on top of these. */
 
+#include "libc.h"
+
 static long syscall3(long number, long a1, long a2, long a3) {
     long ret;
     asm volatile("int $0x80" : "=a"(ret) : "a"(number), "D"(a1), "S"(a2), "d"(a3) : "memory");
@@ -68,4 +70,12 @@ int waitpid(int pid, int *status) {
 
 int getpid(void) {
     return (int)syscall3(39, 0, 0, 0);
+}
+
+long ioctl(int fd, unsigned long request, void *argp) {
+    return syscall3(16, fd, request, (long)(unsigned long)argp);
+}
+
+long getdents(int fd, struct dirent *out) {
+    return syscall3(217, fd, (long)(unsigned long)out, 0);
 }

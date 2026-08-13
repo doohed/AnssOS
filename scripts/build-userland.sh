@@ -22,7 +22,7 @@ CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fn
 LDFLAGS=(-m elf_x86_64 -nostdlib -static --gc-sections -T userland/link.ld)
 
 # The libc every program links against -- see userland/libc.h.
-LIBC_SRCS=(crt0.S syscalls.c libc/string.c libc/malloc.c libc/stdio.c)
+LIBC_SRCS=(crt0.S syscalls.c libc/string.c libc/malloc.c libc/stdio.c libc/termios.c libc/dirent.c)
 
 build_program() {
     local name="$1"
@@ -45,5 +45,7 @@ build_program dirtest dirtest.c
 build_program forktest forktest.c
 build_program forkchild forkchild.c
 build_program preempttest preempttest.c
+build_program termtest termtest.c
+build_program readdirtest readdirtest.c
 
-echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest}.elf"
+echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest}.elf"

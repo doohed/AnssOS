@@ -230,6 +230,10 @@ void kmain(void) {
                         (size_t)(forkchild_elf_end - forkchild_elf_start));
         vfs_write_bytes(vfs_root(), "preempttest.bin", preempttest_elf_start,
                         (size_t)(preempttest_elf_end - preempttest_elf_start));
+        vfs_write_bytes(vfs_root(), "termtest.bin", termtest_elf_start,
+                        (size_t)(termtest_elf_end - termtest_elf_start));
+        vfs_write_bytes(vfs_root(), "readdirtest.bin", readdirtest_elf_start,
+                        (size_t)(readdirtest_elf_end - readdirtest_elf_start));
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

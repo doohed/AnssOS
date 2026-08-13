@@ -145,6 +145,9 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size) {
     struct open_file saved_files[MAX_OPEN_FILES];
     memcpy(saved_files, p->task.open_files, sizeof(saved_files));
     struct vnode *saved_cwd = p->task.cwd;
+    /* Terminal settings belong to the terminal, not the program running
+     * on it -- real Unix exec() doesn't reset them either. */
+    struct k_termios saved_termios = p->task.termios;
     /* p->task.kernel_resume is *live* right now -- it's what the
      * return_to_kernel() call the caller (sys_execve_impl) makes right
      * after this returns will read from, to correctly unwind back to
@@ -172,6 +175,7 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size) {
     p->task = new_task;
     memcpy(p->task.open_files, saved_files, sizeof(saved_files));
     p->task.cwd = saved_cwd;
+    p->task.termios = saved_termios;
     memcpy(p->task.kernel_resume, saved_kernel_resume, sizeof(saved_kernel_resume));
     p->has_run = 0;           /* Next dispatch is a fresh launch at the new entry. */
     p->state = PROC_RUNNABLE; /* Was PROC_RUNNING; the caller is about to abandon this

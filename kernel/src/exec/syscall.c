@@ -2,6 +2,7 @@
 #include "../arch/x86_64/idt.h"
 #include "../arch/x86_64/usermode.h"
 #include "../drivers/serial.h"
+#include "../drivers/tty.h"
 #include "../drivers/virtio/virtio_input.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
@@ -21,6 +22,7 @@
 #define SYS_write 1
 #define SYS_open 2
 #define SYS_close 3
+#define SYS_ioctl 16
 #define SYS_lseek 8
 #define SYS_brk 12
 #define SYS_getpid 39
@@ -30,6 +32,13 @@
 #define SYS_execve 59
 #define SYS_wait4 61
 #define SYS_exit 60
+#define SYS_getdents 217
+
+/* ioctl() requests this project actually understands -- Linux's real
+ * TCGETS/TCSETS values, so a program built the standard way (get
+ * current termios, tweak flags, set them back) works unmodified. */
+#define TCGETS 0x5401
+#define TCSETS 0x5402
 
 /* A task's brk-managed heap never grows past this many bytes past
  * heap_start -- a simple OOM guard, not a real ulimit. */
@@ -42,6 +51,17 @@
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+
+/* A deliberately simplified getdents() -- see sys_getdents_impl() --
+ * one entry per call, not real Linux getdents64's batched-buffer ABI.
+ * d_type values match Linux's real ones anyway, for free compat. */
+#define DT_DIR 4
+#define DT_REG 8
+
+struct dirent {
+    uint8_t d_type;
+    char d_name[VFS_NAME_MAX];
+};
 
 /* Coarse user-pointer validation: real hardware/OS-grade safety needs a
  * fault-recovering copy_from_user(); a bad-but-in-range user pointer
@@ -80,7 +100,14 @@ static int64_t sys_open_impl(const char *path, int flags) {
         }
         node = vfs_resolve(task->cwd, path);
     }
-    if (node == NULL || node->type != VNODE_FILE) {
+    if (node == NULL) {
+        return -1;
+    }
+    /* A directory can only be opened O_RDONLY (no O_CREAT/O_WRONLY --
+     * creating inside one already goes through mkdir()/open(..., O_CREAT),
+     * not this path) -- see sys_getdents_impl() for what an open
+     * directory fd is actually good for. */
+    if (node->type == VNODE_DIR && flags != O_RDONLY) {
         return -1;
     }
 
@@ -131,6 +158,14 @@ static int64_t sys_lseek_impl(int fd, int64_t offset, int whence) {
         return -1;
     }
 
+    /* SEEK_END has no natural meaning for a directory fd (offset there
+     * counts children, not bytes -- see sys_getdents_impl()) without a
+     * full count, kept minimal by just rejecting it; SEEK_SET/SEEK_CUR
+     * work the same for both (SEEK_SET(0) is rewinddir()'s primitive). */
+    if (f->vnode->type == VNODE_DIR && whence == SEEK_END) {
+        return -1;
+    }
+
     int64_t base;
     switch (whence) {
         case SEEK_SET:
@@ -152,6 +187,32 @@ static int64_t sys_lseek_impl(int fd, int64_t offset, int whence) {
     }
     f->offset = (size_t)new_offset;
     return new_offset;
+}
+
+/* Walks `f->vnode->children` (following ->sibling, matching fs/vfs.c's
+ * own vfs_list() traversal) `f->offset` entries in, fills `*out`, and
+ * advances the offset -- one entry per call, not real Linux getdents64's
+ * batched-buffer ABI (see the dirent/DT_* comment above). Returns 1 (an
+ * entry was written), 0 (past the last child -- end of directory), or
+ * -1 (bad fd / not a directory). */
+static int64_t sys_getdents_impl(int fd, struct dirent *out) {
+    struct open_file *f = open_file_for(fd);
+    if (f == NULL || f->vnode->type != VNODE_DIR || !user_ptr_ok(out, sizeof(struct dirent))) {
+        return -1;
+    }
+
+    struct vnode *child = f->vnode->children;
+    for (size_t i = 0; i < f->offset && child != NULL; i++) {
+        child = child->sibling;
+    }
+    if (child == NULL) {
+        return 0;
+    }
+
+    out->d_type = (child->type == VNODE_DIR) ? DT_DIR : DT_REG;
+    memcpy(out->d_name, child->name, VFS_NAME_MAX);
+    f->offset++;
+    return 1;
 }
 
 static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
@@ -201,11 +262,25 @@ static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
     return (int64_t)len;
 }
 
-/* fd 0 is line-buffered, matching the shell's own read_line() -- polls
- * both input sources, echoes as it goes, stops at Enter or `len` bytes.
- * Raw (unbuffered/non-canonical) termios-style reads are future work.
- * fd >= 3 reads straight from the open vnode's buffer at the tracked
- * offset. */
+static int poll_console_char(void) {
+    int c = virtio_input_poll_char();
+    if (c < 0) {
+        c = serial_poll_char();
+    }
+    return c;
+}
+
+/* fd 0 in canonical mode (the default -- see ICANON in drivers/tty.h) is
+ * line-buffered, matching the shell's own read_line(): polls both input
+ * sources, echoes as it goes, stops at Enter or `len` bytes. In raw mode
+ * (ICANON cleared via TCSETS -- see sys_ioctl_impl()) there's no echo
+ * and no backspace handling: blocks until at least one byte is
+ * available (VMIN=1), then drains whatever else is immediately ready up
+ * to `len` without blocking further (VTIME=0) -- the one VMIN/VTIME
+ * combination actually implemented, since it's the one raw-mode
+ * programs use. fd >= 3 reads straight from the open vnode's buffer at
+ * the tracked offset (files only -- see sys_open_impl()/open_file_for()
+ * for the directory case). */
 static int64_t sys_read_impl(int fd, void *buf, size_t len) {
     if (!user_ptr_ok(buf, len)) {
         return -1;
@@ -213,7 +288,7 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
 
     if (fd != 0) {
         struct open_file *f = open_file_for(fd);
-        if (f == NULL) {
+        if (f == NULL || f->vnode->type != VNODE_FILE) {
             return -1;
         }
         struct vnode *node = f->vnode;
@@ -226,13 +301,28 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
         return (int64_t)n;
     }
 
+    struct usertask *task = usermode_current_task();
+    int raw = task != NULL && !(task->termios.c_lflag & ICANON);
     char *bytes = buf;
     size_t n = 0;
-    while (n < len) {
-        int c = virtio_input_poll_char();
-        if (c < 0) {
-            c = serial_poll_char();
+
+    if (raw) {
+        while (n < len) {
+            int c = poll_console_char();
+            if (c < 0) {
+                if (n > 0) {
+                    break; /* VMIN=1/VTIME=0: at least one byte, don't wait for more. */
+                }
+                asm volatile("pause");
+                continue;
+            }
+            bytes[n++] = (char)c;
         }
+        return (int64_t)n;
+    }
+
+    while (n < len) {
+        int c = poll_console_char();
         if (c < 0) {
             asm volatile("pause");
             continue;
@@ -281,6 +371,27 @@ static int64_t sys_brk_impl(uint64_t new_end) {
         task->heap_end += PMM_PAGE_SIZE;
     }
     return (int64_t)task->heap_end;
+}
+
+/* Only the console (fd 0/1/2 -- they all share the same task->termios)
+ * and TCGETS/TCSETS are understood; anything else is rejected, matching
+ * a real ENOTTY-style failure. */
+static int64_t sys_ioctl_impl(int fd, uint64_t request, void *argp) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || (fd != 0 && fd != 1 && fd != 2) ||
+        !user_ptr_ok(argp, sizeof(struct k_termios))) {
+        return -1;
+    }
+
+    if (request == TCGETS) {
+        *(struct k_termios *)argp = task->termios;
+        return 0;
+    }
+    if (request == TCSETS) {
+        task->termios = *(const struct k_termios *)argp;
+        return 0;
+    }
+    return -1;
 }
 
 static int64_t sys_getpid_impl(void) {
@@ -360,6 +471,9 @@ void syscall_dispatch(struct interrupt_frame *frame) {
         case SYS_close:
             result = sys_close_impl((int)frame->rdi);
             break;
+        case SYS_ioctl:
+            result = sys_ioctl_impl((int)frame->rdi, (uint64_t)frame->rsi, (void *)frame->rdx);
+            break;
         case SYS_lseek:
             result = sys_lseek_impl((int)frame->rdi, (int64_t)frame->rsi, (int)frame->rdx);
             break;
@@ -368,6 +482,9 @@ void syscall_dispatch(struct interrupt_frame *frame) {
             break;
         case SYS_mkdir:
             result = sys_mkdir_impl((const char *)frame->rdi);
+            break;
+        case SYS_getdents:
+            result = sys_getdents_impl((int)frame->rdi, (struct dirent *)frame->rsi);
             break;
         case SYS_brk:
             result = sys_brk_impl((uint64_t)frame->rdi);

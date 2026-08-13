@@ -17,6 +17,7 @@ int fork(void);
 int execve(const char *path);
 int waitpid(int pid, int *status);
 int getpid(void);
+long ioctl(int fd, unsigned long request, void *argp);
 
 #define O_RDONLY 0
 #define O_WRONLY 1
@@ -25,6 +26,48 @@ int getpid(void);
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+
+/* Linux's real struct termios layout/flag values -- see
+ * kernel/src/drivers/tty.h for why. tcgetattr()/tcsetattr()
+ * (userland/libc/termios.c) are the usual POSIX-shaped wrappers over
+ * ioctl(fd, TCGETS/TCSETS, ...) above. */
+#define NCCS 19
+struct termios {
+    unsigned int c_iflag, c_oflag, c_cflag, c_lflag;
+    unsigned char c_line;
+    unsigned char c_cc[NCCS];
+};
+#define ICANON 0x0002
+#define ECHO 0x0008
+#define VMIN 6
+#define VTIME 5
+#define TCGETS 0x5401
+#define TCSETS 0x5402
+#define TCSANOW 0
+int tcgetattr(int fd, struct termios *t);
+int tcsetattr(int fd, int optional_actions, const struct termios *t);
+
+/* A deliberately simplified getdents() -- see
+ * kernel/src/exec/syscall.c's sys_getdents_impl() -- one entry per call,
+ * not real Linux getdents64's batched-buffer ABI. d_name's size must
+ * match fs/vfs.h's VFS_NAME_MAX. opendir()/readdir()/closedir()/
+ * rewinddir() (userland/libc/dirent.c) are the usual POSIX-shaped
+ * wrappers built on top. */
+#define DT_DIR 4
+#define DT_REG 8
+struct dirent {
+    unsigned char d_type;
+    char d_name[64];
+};
+long getdents(int fd, struct dirent *out);
+
+typedef struct {
+    int fd;
+} DIR;
+DIR *opendir(const char *path);
+struct dirent *readdir(DIR *dirp);
+int closedir(DIR *dirp);
+void rewinddir(DIR *dirp);
 
 /* userland/libc/string.c */
 size_t strlen(const char *s);

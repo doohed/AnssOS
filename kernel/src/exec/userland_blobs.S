@@ -1,5 +1,5 @@
 /* Embeds the built hello/crash/malloctest/filetest/dirtest/forktest/
- * forkchild/preempttest userland test payloads (see
+ * forkchild/preempttest/termtest/readdirtest userland test payloads (see
  * scripts/build-userland.sh, which drops their built ELF bytes at
  * <name>.elf.bin right next to this file before the kernel itself is
  * built) directly into the kernel image, so main.c's self-test wiring
@@ -55,5 +55,17 @@ forkchild_elf_end:
 preempttest_elf_start:
 .incbin "src/exec/preempttest.elf.bin"
 preempttest_elf_end:
+
+.global termtest_elf_start
+.global termtest_elf_end
+termtest_elf_start:
+.incbin "src/exec/termtest.elf.bin"
+termtest_elf_end:
+
+.global readdirtest_elf_start
+.global readdirtest_elf_end
+readdirtest_elf_start:
+.incbin "src/exec/readdirtest.elf.bin"
+readdirtest_elf_end:
 
 .section .note.GNU-stack,"",@progbits

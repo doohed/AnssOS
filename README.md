@@ -447,6 +447,38 @@ virtio-gpu queue.
       warm-up) then stay *exactly flat* for every subsequent run — the
       actual signature of bounded memory use, not just a slower leak.
 
+- [x] **M15 — `termios` raw mode, and `opendir`/`readdir`.** Two
+      prerequisites for eventually running real terminal programs
+      (`vim`'s raw keystroke-at-a-time input, directory-aware tools).
+      New `drivers/tty.h` defines Linux's real `struct termios` layout
+      and `ICANON`/`ECHO`/`VMIN`/`VTIME` flag values (same free-future-
+      compat reasoning M10-M14 already used for syscall numbers); `struct
+      usertask` gains a `termios` field, defaulted by `elf_load()` to
+      today's actual behavior (`ICANON|ECHO`) and explicitly preserved
+      across `exec()` — real Unix semantics: terminal settings belong to
+      the terminal, not the program, `fork()` inherits it for free via
+      the existing shallow copy. New syscall `ioctl` (16, `TCGETS`/
+      `TCSETS=0x5401/0x5402`) gets/sets it; `sys_read_impl()`'s fd-0 path
+      now branches on `ICANON` — raw mode does no echo/backspace
+      handling and returns as soon as one byte is available (`VMIN=1`,
+      `VTIME=0` — the one concrete combination implemented). Separately,
+      `sys_open_impl()` now allows opening a directory read-only
+      (`open_file.offset` reused as "index of the next child"), and new
+      syscall `getdents` (217) walks `vnode->children` one entry per call
+      — a deliberate simplification of real `getdents64`'s batched-
+      buffer ABI. `userland/libc/termios.c` (`tcgetattr`/`tcsetattr`) and
+      `libc/dirent.c` (`opendir`/`readdir`/`closedir`/`rewinddir`, a
+      `DIR *` wrapping an fd, `readdir()` reusing a `static` buffer per
+      real `readdir()`'s "valid until next call" contract) present the
+      usual POSIX-shaped API over both. New test payloads:
+      `readdirtest.bin` (lists `/`, verified against the shell's own
+      `ls` — same 11 entries, same names) and `termtest.bin` (reads back
+      the default `c_lflag` as `0xa` = `ICANON|ECHO`, switches to raw
+      mode, and reads three interactively-typed keystrokes one at a
+      time with no Enter needed and no kernel-side echo — only the
+      program's own `got byte:` prints appear — before restoring the
+      original settings).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no

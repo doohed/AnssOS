@@ -1,6 +1,7 @@
 #include "elf.h"
 #include "../arch/x86_64/usermode.h"
 #include "../drivers/serial.h"
+#include "../drivers/tty.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
@@ -151,5 +152,8 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
     out->heap_start = heap_base;
     out->heap_end = heap_base; /* Zero-size until the first brk(). */
     out->cwd = vfs_root();
+    out->termios.c_lflag = ICANON | ECHO; /* Today's actual default behavior, made explicit. */
+    out->termios.c_cc[VMIN] = 1;
+    out->termios.c_cc[VTIME] = 0;
     return 0;
 }
