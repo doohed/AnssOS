@@ -68,4 +68,10 @@ readdirtest_elf_start:
 .incbin "src/exec/readdirtest.elf.bin"
 readdirtest_elf_end:
 
+.global scarf_elf_start
+.global scarf_elf_end
+scarf_elf_start:
+.incbin "src/exec/scarf.elf.bin"
+scarf_elf_end:
+
 .section .note.GNU-stack,"",@progbits

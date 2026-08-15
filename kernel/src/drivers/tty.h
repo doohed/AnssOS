@@ -27,4 +27,20 @@ struct k_termios {
 #define VMIN 6
 #define VTIME 5
 
+/* Linux's real TIOCGWINSZ request value and struct winsize layout, same
+ * free-compat reasoning as everything else here. A full-screen program
+ * (userland/scarf.c) can't lay anything out without knowing how big the
+ * terminal is -- see exec/syscall.c's sys_ioctl_impl(), which answers
+ * from console/fbconsole.c's actual glyph grid when the framebuffer
+ * console is up. ws_xpixel/ws_ypixel are reported as 0, which is what
+ * real terminals that don't know their pixel size do. */
+#define TIOCGWINSZ 0x5413
+
+struct k_winsize {
+    uint16_t ws_row;
+    uint16_t ws_col;
+    uint16_t ws_xpixel;
+    uint16_t ws_ypixel;
+};
+
 #endif

@@ -55,20 +55,33 @@ static struct virtio_input_event *event_bufs; /* HHDM-mapped, EVENTQ_BUFFERS ent
 static int shift_held;
 static int initialized; /* Guards virtio_input_poll_char() if init never ran or failed. */
 
-/* Minimal US QWERTY: Linux key codes (see the kernel's
- * input-event-codes.h) -> ASCII. 0 means "no mapping, drop the key".
- * Only what's needed to type shell commands -- letters, digits, space,
- * enter, backspace, and a handful of punctuation. Shifted digit-row
- * symbols ('!', '@', ...) aren't mapped -- a documented limitation, not
- * an oversight. */
+/* US QWERTY: Linux key codes (see the kernel's input-event-codes.h) ->
+ * ASCII. 0 means "no mapping, drop the key".
+ *
+ * Escape (code 1) matters more than it looks: it's the only way out of
+ * insert mode in userland/scarf.c, and without it modal editing is
+ * impossible on this input path. Over serial the terminal sends 0x1b
+ * itself, so this gap only ever showed up in a graphical window. */
 static const char KEYMAP_LOWER[62] = {
-    [2] = '1',  [3] = '2',  [4] = '3',   [5] = '4',  [6] = '5',  [7] = '6',   [8] = '7',
-    [9] = '8',  [10] = '9', [11] = '0',  [12] = '-', [13] = '=', [14] = '\b', [16] = 'q',
-    [17] = 'w', [18] = 'e', [19] = 'r',  [20] = 't', [21] = 'y', [22] = 'u',  [23] = 'i',
-    [24] = 'o', [25] = 'p', [28] = '\n', [30] = 'a', [31] = 's', [32] = 'd',  [33] = 'f',
-    [34] = 'g', [35] = 'h', [36] = 'j',  [37] = 'k', [38] = 'l', [39] = ';',  [44] = 'z',
-    [45] = 'x', [46] = 'c', [47] = 'v',  [48] = 'b', [49] = 'n', [50] = 'm',  [51] = ',',
-    [52] = '.', [53] = '/', [57] = ' ',
+    [1] = 0x1b,  [2] = '1',  [3] = '2',  [4] = '3',   [5] = '4',  [6] = '5',   [7] = '6',
+    [8] = '7',   [9] = '8',  [10] = '9', [11] = '0',  [12] = '-', [13] = '=',  [14] = '\b',
+    [15] = '\t', [16] = 'q', [17] = 'w', [18] = 'e',  [19] = 'r', [20] = 't',  [21] = 'y',
+    [22] = 'u',  [23] = 'i', [24] = 'o', [25] = 'p',  [26] = '[', [27] = ']',  [28] = '\n',
+    [30] = 'a',  [31] = 's', [32] = 'd', [33] = 'f',  [34] = 'g', [35] = 'h',  [36] = 'j',
+    [37] = 'k',  [38] = 'l', [39] = ';', [40] = '\'', [41] = '`', [43] = '\\', [44] = 'z',
+    [45] = 'x',  [46] = 'c', [47] = 'v', [48] = 'b',  [49] = 'n', [50] = 'm',  [51] = ',',
+    [52] = '.',  [53] = '/', [57] = ' ',
+};
+
+/* The shifted half of the same layout. Previously shift only uppercased
+ * letters, which left every shifted symbol unreachable -- including ':',
+ * without which userland/scarf.c has no way to type :w or :q. Codes absent
+ * here fall back to KEYMAP_LOWER (with a-z uppercased), so an unshifted
+ * key never stops working just because its shifted form is unlisted. */
+static const char KEYMAP_UPPER[62] = {
+    [2] = '!',  [3] = '@',  [4] = '#',  [5] = '$',  [6] = '%',  [7] = '^',  [8] = '&',
+    [9] = '*',  [10] = '(', [11] = ')', [12] = '_', [13] = '+', [26] = '{', [27] = '}',
+    [39] = ':', [40] = '"', [41] = '~', [43] = '|', [51] = '<', [52] = '>', [53] = '?',
 };
 
 static char lower_char(char c) {
@@ -215,11 +228,13 @@ int virtio_input_poll_char(void) {
             continue;
         }
         char c = KEYMAP_LOWER[ev.code];
+        if (shift_held && KEYMAP_UPPER[ev.code] != '\0') {
+            c = KEYMAP_UPPER[ev.code];
+        } else if (shift_held && c >= 'a' && c <= 'z') {
+            c = (char)(c - 'a' + 'A');
+        }
         if (c == '\0') {
             continue;
-        }
-        if (shift_held && c >= 'a' && c <= 'z') {
-            c = (char)(c - 'a' + 'A');
         }
         return (unsigned char)c;
     }

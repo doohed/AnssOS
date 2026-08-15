@@ -22,6 +22,7 @@ long ioctl(int fd, unsigned long request, void *argp);
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_CREAT 0x40
+#define O_TRUNC 0x200
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -46,6 +47,14 @@ struct termios {
 #define TCSANOW 0
 int tcgetattr(int fd, struct termios *t);
 int tcsetattr(int fd, int optional_actions, const struct termios *t);
+
+/* Terminal geometry, for a full-screen program that has to lay itself
+ * out -- see kernel/src/drivers/tty.h. Answered from the framebuffer
+ * console's glyph grid, or 80x24 on a boot with no virtio-gpu. */
+#define TIOCGWINSZ 0x5413
+struct winsize {
+    unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel;
+};
 
 /* A deliberately simplified getdents() -- see
  * kernel/src/exec/syscall.c's sys_getdents_impl() -- one entry per call,

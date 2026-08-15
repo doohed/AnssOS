@@ -234,6 +234,11 @@ void kmain(void) {
                         (size_t)(termtest_elf_end - termtest_elf_start));
         vfs_write_bytes(vfs_root(), "readdirtest.bin", readdirtest_elf_start,
                         (size_t)(readdirtest_elf_end - readdirtest_elf_start));
+        /* Not a self-test fixture like the rest -- scarf.bin is an actual
+         * tool (`run scarf.bin`), embedded the same way for the same
+         * reason: there's no host-side way to get a file onto the VFS. */
+        vfs_write_bytes(vfs_root(), "scarf.bin", scarf_elf_start,
+                        (size_t)(scarf_elf_end - scarf_elf_start));
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

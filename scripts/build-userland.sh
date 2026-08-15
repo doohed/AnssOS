@@ -54,5 +54,6 @@ build_program forkchild forkchild.c
 build_program preempttest preempttest.c
 build_program termtest termtest.c
 build_program readdirtest readdirtest.c
+build_program scarf scarf.c
 
-echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest}.elf"
+echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest,scarf}.elf"

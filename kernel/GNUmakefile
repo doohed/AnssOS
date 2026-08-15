@@ -76,6 +76,13 @@ bin/$(OUTPUT): GNUmakefile linker.ld $(OBJ)
 %.S.o: %.S GNUmakefile
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
+# .incbin isn't an #include, so -MMD never records the embedded userland
+# payloads as dependencies -- editing a userland program and rebuilding
+# would quietly keep the *previous* binary in the kernel image, since
+# userland_blobs.S itself hadn't changed. The blobs exist by the time
+# this is parsed: build-iso.sh runs scripts/build-userland.sh first.
+src/exec/userland_blobs.S.o: $(wildcard src/exec/*.elf.bin)
+
 .PHONY: clean
 clean:
 	rm -rf bin $(OBJ) $(HEADER_DEPS)

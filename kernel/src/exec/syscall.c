@@ -1,6 +1,7 @@
 #include "syscall.h"
 #include "../arch/x86_64/idt.h"
 #include "../arch/x86_64/usermode.h"
+#include "../console/fbconsole.h"
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
 #include "../drivers/virtio/virtio_input.h"
@@ -47,6 +48,7 @@
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_CREAT 0x40
+#define O_TRUNC 0x200
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -87,7 +89,7 @@ static struct open_file *open_file_for(int fd) {
 
 static int64_t sys_open_impl(const char *path, int flags) {
     struct usertask *task = usermode_current_task();
-    int access_mode = flags & ~O_CREAT;
+    int access_mode = flags & ~(O_CREAT | O_TRUNC);
     if (task == NULL || !user_ptr_ok(path, 1) ||
         (access_mode != O_RDONLY && access_mode != O_WRONLY)) {
         return -1;
@@ -109,6 +111,16 @@ static int64_t sys_open_impl(const char *path, int flags) {
      * directory fd is actually good for. */
     if (node->type == VNODE_DIR && flags != O_RDONLY) {
         return -1;
+    }
+
+    /* O_TRUNC: drop the existing content before the first write. Without
+     * this, sys_write_impl() only ever grows a file (it writes at an
+     * offset and extends), so saving a file that got *shorter* would
+     * leave the tail of the previous version behind -- which any editor
+     * (userland/scarf.c) does constantly. Only the length is reset; the
+     * allocation is left alone for the coming writes to reuse. */
+    if ((flags & O_TRUNC) && node->type == VNODE_FILE && access_mode == O_WRONLY) {
+        node->size = 0;
     }
 
     for (int i = 0; i < MAX_OPEN_FILES; i++) {
@@ -221,9 +233,17 @@ static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
     }
     if (fd == 1 || fd == 2) {
         const char *bytes = buf;
+        /* One write() from userland becomes exactly one virtio-gpu flush
+         * rather than one per character. A full-screen redraw
+         * (userland/scarf.c) is thousands of bytes, and a virtqueue round
+         * trip each was slow enough to make the editor unusable -- see
+         * fbconsole_begin_batch(). Purely a batching change: the bytes,
+         * and the serial output, are identical either way. */
+        fbconsole_begin_batch();
         for (size_t i = 0; i < len; i++) {
             kprintf("%c", bytes[i]);
         }
+        fbconsole_end_batch();
         return (int64_t)len;
     }
 
@@ -378,17 +398,48 @@ static int64_t sys_brk_impl(uint64_t new_end) {
  * a real ENOTTY-style failure. */
 static int64_t sys_ioctl_impl(int fd, uint64_t request, void *argp) {
     struct usertask *task = usermode_current_task();
-    if (task == NULL || (fd != 0 && fd != 1 && fd != 2) ||
-        !user_ptr_ok(argp, sizeof(struct k_termios))) {
+    if (task == NULL || (fd != 0 && fd != 1 && fd != 2)) {
         return -1;
     }
 
+    /* The buffer size to validate depends on the request -- a struct
+     * winsize is 8 bytes where a struct termios is 36, so checking one
+     * fixed size up front (as this did when TCGETS/TCSETS were the only
+     * requests) would reject perfectly valid winsize pointers sitting
+     * near the end of a mapped page. */
     if (request == TCGETS) {
+        if (!user_ptr_ok(argp, sizeof(struct k_termios))) {
+            return -1;
+        }
         *(struct k_termios *)argp = task->termios;
         return 0;
     }
     if (request == TCSETS) {
+        if (!user_ptr_ok(argp, sizeof(struct k_termios))) {
+            return -1;
+        }
         task->termios = *(const struct k_termios *)argp;
+        return 0;
+    }
+    if (request == TIOCGWINSZ) {
+        if (!user_ptr_ok(argp, sizeof(struct k_winsize))) {
+            return -1;
+        }
+        uint32_t cols, rows;
+        /* No framebuffer console means the serial line is the only
+         * terminal, and nothing tells the kernel how big the far end is
+         * -- report the classic 80x24 rather than failing, so a
+         * full-screen program still has a usable (if possibly wrong)
+         * geometry to lay out against. */
+        if (fbconsole_size(&cols, &rows) != 0) {
+            cols = 80;
+            rows = 24;
+        }
+        struct k_winsize *ws = argp;
+        ws->ws_row = (uint16_t)rows;
+        ws->ws_col = (uint16_t)cols;
+        ws->ws_xpixel = 0;
+        ws->ws_ypixel = 0;
         return 0;
     }
     return -1;
