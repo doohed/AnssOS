@@ -1,0 +1,25 @@
+# Mirrors .gitignore -- the build context only ever needs to be small
+# (docker/Dockerfile COPYs nothing; the repo comes in as a bind mount at
+# /work), so keep git metadata and every build artifact out of it.
+.git/
+
+# Kernel build output
+kernel/bin/
+kernel/src/**/*.o
+kernel/src/**/*.d
+kernel/src/exec/*.elf.bin
+
+# Userland (test payload) build output
+userland/**/*.o
+userland/*.elf
+
+# Root build output
+*.iso
+*.img
+*.hdd
+*.o
+iso_root/
+OVMF_VARS.local.fd
+
+# Agents config
+.claude/

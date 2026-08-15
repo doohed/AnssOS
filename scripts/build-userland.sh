@@ -14,11 +14,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CC=cc
-LD=ld
+# Same CC/LD override as kernel/GNUmakefile, for the same reason: native
+# cc/ld on an x86_64 host, clang/ld.lld when docker/Dockerfile's ENV says
+# so. clang defaults to the host triple, so it needs telling that these
+# are bare-metal x86_64 binaries; gcc gets nothing extra.
+CC="${CC:-cc}"
+LD="${LD:-ld}"
 CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie
     -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv -mno-80387 -mno-mmx
     -mno-sse -mno-sse2 -mno-red-zone)
+if "$CC" --version 2>/dev/null | grep -qi clang; then
+    CFLAGS+=(--target=x86_64-unknown-none)
+fi
 LDFLAGS=(-m elf_x86_64 -nostdlib -static --gc-sections -T userland/link.ld)
 
 # The libc every program links against -- see userland/libc.h.

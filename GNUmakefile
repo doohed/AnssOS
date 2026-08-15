@@ -12,6 +12,10 @@ all:
 run: all
 	./scripts/run-qemu.sh
 
+.PHONY: docker
+docker:
+	./scripts/docker-shell.sh
+
 .PHONY: format
 format:
 	./scripts/format.sh

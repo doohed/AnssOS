@@ -3,8 +3,11 @@
 
 override OUTPUT := kernel
 
-CC := cc
-LD := ld
+# Overridable from the environment so a cross-build works without editing
+# anything here: on an x86_64 Linux host these stay the native cc/ld, and
+# docker/Dockerfile sets CC=clang / LD=ld.lld for a non-x86_64 host.
+CC ?= cc
+LD ?= ld
 
 # User controllable flags.
 CFLAGS := -g -O2 -pipe -Wall -Wextra -std=gnu11
@@ -31,6 +34,17 @@ override CFLAGS += \
     -mno-sse2 \
     -mno-red-zone \
     -mcmodel=kernel
+
+# gcc only ever builds for the machine it was built for, so a native
+# x86_64 gcc needs nothing extra and gets nothing extra -- the flags above
+# are exactly what it saw before. clang is a cross-compiler by
+# construction, though, and defaults to the *host* triple, so on a non-x86
+# host it has to be told what we're building for. -unknown-none (rather
+# than -linux-gnu) is the bare-metal triple: no OS, no libc assumptions,
+# which is what -ffreestanding above is already asking for anyway.
+ifneq (,$(findstring clang,$(shell $(CC) --version 2>/dev/null)))
+override CFLAGS += --target=x86_64-unknown-none
+endif
 
 override CPPFLAGS += -MMD -MP
 
