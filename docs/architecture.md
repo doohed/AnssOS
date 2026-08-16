@@ -27,7 +27,10 @@ what went wrong building it; this is the shape of the result.
   future work.
 - **Drivers:** virtio-only. The kernel enumerates PCI itself and speaks the
   virtio 1.x ("modern") PCI transport directly — no legacy virtio, no
-  non-virtio device drivers.
+  non-virtio device drivers. `drivers/virtio/virtio_snd.c` (M17) is the
+  newest: a virtio-sound driver wiring up just the control and tx
+  virtqueues (not event/rx — playback only) for PCM output, see
+  [play.md](play.md).
 - **Debugging:** all kernel logging goes out over the COM1 serial port
   (`kprintf`), independent of the display, so anything after boot is
   debuggable via `-serial stdio` even before the framebuffer driver works.

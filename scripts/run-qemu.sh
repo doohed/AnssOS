@@ -64,9 +64,29 @@ else
     exit 1
 fi
 
+# Audio backend (M17, virtio-sound) -- auto-picks a real, audible
+# backend when one is actually reachable (PulseAudio/PipeWire via
+# `pactl`, else ALSA via `aplay`), so `play` just comes out of your
+# speakers by default. Falls back to QEMU's "wav" backend (captures to
+# AnssOS-audio-out.wav, gitignored like AnssOS-disk.img, instead of
+# speakers) only when neither is reachable -- e.g. a headless CI/sandbox
+# box with no audio setup at all -- so a boot never hard-fails here for
+# lack of sound hardware. Set QEMU_AUDIODEV yourself to override either
+# way, e.g. QEMU_AUDIODEV="coreaudio,id=snd0" on macOS, or force the wav
+# capture back on for a deterministic test: QEMU_AUDIODEV="wav,id=snd0,path=AnssOS-audio-out.wav".
+if [ -n "${QEMU_AUDIODEV:-}" ]; then
+    : # explicit override wins, nothing to detect
+elif command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
+    QEMU_AUDIODEV="pa,id=snd0"
+elif command -v aplay >/dev/null 2>&1 && aplay -l >/dev/null 2>&1; then
+    QEMU_AUDIODEV="alsa,id=snd0"
+else
+    QEMU_AUDIODEV="wav,id=snd0,path=AnssOS-audio-out.wav"
+fi
+
 exec qemu-system-x86_64 \
     -M q35 \
-    -m 256M \
+    -m 512M \
     -no-shutdown \
     -vga none \
     "${fw_args[@]}" \
@@ -75,5 +95,7 @@ exec qemu-system-x86_64 \
     -device virtio-keyboard-pci \
     -drive file="$DISK",if=none,id=disk0,format=raw \
     -device virtio-blk-pci,drive=disk0,disable-legacy=on \
+    -device virtio-sound-pci,audiodev=snd0 \
+    -audiodev "$QEMU_AUDIODEV" \
     -serial stdio \
     "$@"

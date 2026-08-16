@@ -5,6 +5,7 @@
 #include "../drivers/serial.h"
 #include "../drivers/tty.h"
 #include "../drivers/virtio/virtio_input.h"
+#include "../drivers/virtio/virtio_snd.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
@@ -35,6 +36,16 @@
 #define SYS_exit 60
 #define SYS_getdents 217
 #define SYS_getcwd 79
+
+/* AnssOS-native syscalls, 900+ -- unlike everything above, these have no
+ * real Linux equivalent (Linux does audio via /dev/snd + ioctl, and
+ * AnssOS has no devfs), so there's no free number to reuse. Picked well
+ * clear of Linux's real x86_64 table (which tops out in the low 500s) so
+ * they read as obviously not-a-real-syscall. */
+#define SYS_audio_open 900
+#define SYS_audio_write 901
+#define SYS_audio_close 902
+#define SYS_poll_key 903
 
 /* ioctl() requests this project actually understands -- Linux's real
  * TCGETS/TCSETS values, so a program built the standard way (get
@@ -451,6 +462,31 @@ static int64_t sys_getpid_impl(void) {
     return p != NULL ? p->pid : -1;
 }
 
+static int64_t sys_audio_open_impl(uint32_t rate_hz, uint32_t channels) {
+    return virtio_snd_open(rate_hz, (uint8_t)channels);
+}
+
+static int64_t sys_audio_write_impl(const void *buf, uint32_t len) {
+    return virtio_snd_write(buf, len);
+}
+
+static int64_t sys_audio_close_impl(void) {
+    return virtio_snd_close();
+}
+
+/* Non-blocking single-byte keypress poll -- exactly shell.c's own
+ * read_line() polling pattern (virtio_input_poll_char(), falling back to
+ * serial_poll_char()), lifted into a syscall instead of duplicated. This
+ * is what lets a userland player check for a control key without
+ * blocking the audio-feeding loop the way a raw-mode read() would. */
+static int64_t sys_poll_key_impl(void) {
+    int c = virtio_input_poll_char();
+    if (c < 0) {
+        c = serial_poll_char();
+    }
+    return c;
+}
+
 static int64_t sys_fork_impl(struct interrupt_frame *frame) {
     struct process *me = process_current();
     if (me == NULL) {
@@ -599,6 +635,18 @@ void syscall_dispatch(struct interrupt_frame *frame) {
             break;
         case SYS_getpid:
             result = sys_getpid_impl();
+            break;
+        case SYS_audio_open:
+            result = sys_audio_open_impl((uint32_t)frame->rdi, (uint32_t)frame->rsi);
+            break;
+        case SYS_audio_write:
+            result = sys_audio_write_impl((const void *)frame->rdi, (uint32_t)frame->rsi);
+            break;
+        case SYS_audio_close:
+            result = sys_audio_close_impl();
+            break;
+        case SYS_poll_key:
+            result = sys_poll_key_impl();
             break;
         case SYS_fork:
             result = sys_fork_impl(frame);

@@ -74,4 +74,18 @@ scarf_elf_start:
 .incbin "src/exec/scarf.elf.bin"
 scarf_elf_end:
 
+.global play_elf_start
+.global play_elf_end
+play_elf_start:
+.incbin "src/exec/play.elf.bin"
+play_elf_end:
+
+/* Not an ELF -- raw WAV bytes (see scripts/gen-test-tone.py), a fixture
+ * for `play` the same way filetest.txt is a fixture for filetest.bin. */
+.global testtone_wav_start
+.global testtone_wav_end
+testtone_wav_start:
+.incbin "src/exec/testtone.wav.bin"
+testtone_wav_end:
+
 .section .note.GNU-stack,"",@progbits

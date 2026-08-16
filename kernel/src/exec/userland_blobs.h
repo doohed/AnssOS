@@ -26,5 +26,9 @@ extern const unsigned char readdirtest_elf_start[];
 extern const unsigned char readdirtest_elf_end[];
 extern const unsigned char scarf_elf_start[];
 extern const unsigned char scarf_elf_end[];
+extern const unsigned char play_elf_start[];
+extern const unsigned char play_elf_end[];
+extern const unsigned char testtone_wav_start[];
+extern const unsigned char testtone_wav_end[];
 
 #endif

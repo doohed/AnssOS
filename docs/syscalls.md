@@ -36,6 +36,28 @@ termios` has Linux's layout, and so on.
 Everything resolves paths against the calling task's cwd, so relative
 paths behave as they do in the shell.
 
+## AnssOS-native syscalls (900+)
+
+Linux does audio via `/dev/snd/*` + `ioctl`, and AnssOS has no devfs, so
+unlike every syscall above there's no real Linux number to reuse for
+audio. These four are AnssOS-only, picked well clear of Linux's real
+x86_64 table (which tops out in the low 500s) so they read as obviously
+not-a-real-syscall:
+
+| № | Name | Signature | Notes |
+|---|---|---|---|
+| 900 | `audio_open` | `audio_open(rate_hz, channels)` | `rate_hz` ∈ {44100, 48000}, `channels` ∈ {1, 2} only |
+| 901 | `audio_write` | `audio_write(buf, len)` | S16LE PCM; blocks until the device has consumed it |
+| 902 | `audio_close` | `audio_close()` | |
+| 903 | `poll_key` | `poll_key()` | non-blocking; -1 if no key is ready |
+
+`poll_key` is what makes an interactive audio player possible without
+threads or `poll`/`select`: it's the exact same non-blocking
+`virtio_input_poll_char()`/`serial_poll_char()` pattern `shell.c`'s own
+`read_line()` already polls with, exposed as a syscall so a playback
+loop can check for a control key without ever blocking the loop that
+feeds the audio device — see [play.md](play.md).
+
 ## The initial stack
 
 `elf_load()` builds a System V AMD64 process-initialization stack. At

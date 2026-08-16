@@ -20,6 +20,18 @@ int getpid(void);
 int getcwd(char *buf, unsigned long size);
 long ioctl(int fd, unsigned long request, void *argp);
 
+/* AnssOS-native syscalls (900+, no Linux equivalent -- see
+ * kernel/src/exec/syscall.c). audio_open() configures the single
+ * playback stream (rate_hz must be 44100 or 48000, channels 1 or 2);
+ * audio_write() sends S16LE PCM, blocking until the device has consumed
+ * it; audio_close() stops/releases the stream. poll_key() is a
+ * non-blocking keypress check (-1 if none ready) -- the piece that lets
+ * a playback loop check for a control key without blocking on read(). */
+int audio_open(unsigned int rate_hz, unsigned int channels);
+long audio_write(const void *buf, unsigned int len);
+int audio_close(void);
+int poll_key(void);
+
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_CREAT 0x40

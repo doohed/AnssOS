@@ -11,6 +11,7 @@
 #include "drivers/virtio/virtio_blk.h"
 #include "drivers/virtio/virtio_gpu.h"
 #include "drivers/virtio/virtio_input.h"
+#include "drivers/virtio/virtio_snd.h"
 #include "exec/userland_blobs.h"
 #include "fs/blkfs.h"
 #include "fs/vfs.h"
@@ -202,6 +203,14 @@ void kmain(void) {
                 "Boot QEMU with -device virtio-blk-pci for persistence.\n");
         }
 
+        if (virtio_snd_init() == 0) {
+            kprintf("M17 complete: virtio-sound ready.\n");
+        } else {
+            kprintf(
+                "Skipping M17 (no virtio-sound device) -- audio playback unavailable. Boot "
+                "QEMU with -device virtio-sound-pci for `play`.\n");
+        }
+
         /* M10/M11 self-test fixtures: the hand-rolled userland test
          * payloads (see userland/, embedded into the kernel image via
          * exec/userland_blobs.S) get written fresh onto the in-memory VFS
@@ -245,6 +254,12 @@ void kmain(void) {
          * tool (`run scarf.bin`), embedded the same way for the same
          * reason: there's no host-side way to get a file onto the VFS. */
         vfs_write_bytes(bin, "scarf", scarf_elf_start, (size_t)(scarf_elf_end - scarf_elf_start));
+        /* Likewise play.bin -- plus testtone.wav, a synthesized fixture
+         * (scripts/gen-test-tone.py) so `play testtone.wav` works out of
+         * the box with no host-side file provisioning step. */
+        vfs_write_bytes(bin, "play", play_elf_start, (size_t)(play_elf_end - play_elf_start));
+        vfs_write_bytes(vfs_root(), "testtone.wav", testtone_wav_start,
+                        (size_t)(testtone_wav_end - testtone_wav_start));
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

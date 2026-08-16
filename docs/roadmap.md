@@ -434,6 +434,58 @@ virtio-gpu queue.
       keystroke. The sidebar layout keeps one editor pane against the
       right edge specifically so it can clear with `ESC[K`.
 
+- [x] **M17 -- `virtio-sound` driver + audio syscalls.** No audio path
+      existed at all before this: no sound driver, no audio syscalls.
+      New `kernel/src/drivers/virtio/virtio_snd.c/.h`, same shape as
+      `virtio_blk.c` and built entirely on the existing generic
+      transport in `virtio.c` -- only the control and tx virtqueues get
+      wired up (event/rx go untouched, the same "only wire up the
+      queues you use" precedent `virtio_gpu.c` already set by skipping
+      its cursor queue), since this driver only ever plays audio. Init
+      queries `PCM_INFO` on stream 0 and checks its direction is output
+      before trusting it, rather than blindly assuming stream layout.
+      Playback is `SET_PARAMS` + `PREPARE` + `START` on open, one
+      3-descriptor tx chain (xfer header / data / status -- the same
+      shape `virtio_blk.c`'s own request chain already uses) per
+      4 KiB chunk on write, `STOP` + `RELEASE` on close. Only 16-bit
+      signed PCM at 44100/48000 Hz, mono or stereo, is supported -- the
+      one concrete combination this milestone needed.
+      Four new syscalls (`docs/syscalls.md`), the first ones in the
+      project with **no Linux equivalent** to reuse a number from
+      (Linux does audio via `/dev/snd/*` + `ioctl`, and AnssOS has no
+      devfs): `audio_open`/`audio_write`/`audio_close` proxy directly
+      to the driver, and `poll_key` -- a non-blocking keypress check --
+      is `shell.c`'s own `read_line()` polling pattern
+      (`virtio_input_poll_char()` then `serial_poll_char()`) lifted
+      into a syscall, since a playback loop has to check for a control
+      key without ever blocking the loop that feeds the audio device.
+      **The actual discovery this milestone was about:** the kernel
+      builds with `-mno-sse -mno-80387` everywhere and has no
+      FPU/SSE context-switch support at all, so real MP3 decoding
+      (float-heavy Huffman/IMDCT/synthesis-filterbank work) isn't
+      reachable yet -- see M18.
+
+- [x] **M18 -- `play`, an interactive WAV/PCM CLI player.** New
+      `userland/play.c`: a small RIFF/WAVE chunk walker (not a library,
+      just enough to find `fmt `/`data`, tolerating a `LIST`/`fact`
+      chunk in between), a playback loop that reads 4 KiB chunks,
+      applies **integer-only** volume scaling (`sample * volume / 100`
+      -- deliberately no floating point, see M17's discovery above),
+      and calls the new `audio_write()` syscall, polling `poll_key()`
+      once per chunk for `space`/`q`/`n`/`+`/`-` controls. Raw terminal
+      mode (`tcgetattr`/`tcsetattr` dropping `ICANON|ECHO`) is the same
+      pattern `userland/termtest.c` already used. New
+      `scripts/gen-test-tone.py` synthesizes a short sine-wave WAV at
+      build time, embedded the same `.incbin` way ELF payloads are --
+      there is still no host-side way to get an arbitrary file onto the
+      VFS otherwise -- so `play testtone.wav` works with zero
+      provisioning. `scripts/run-qemu.sh` now always passes
+      `-device virtio-sound-pci`, defaulting `-audiodev` to QEMU's
+      `wav` backend (captures to `AnssOS-audio-out.wav` on the host) so
+      this is boot-verifiable on any machine, real audio hardware or
+      not -- the audio equivalent of M5's pixel-swatch screendump
+      check. See [play.md](play.md).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
@@ -444,8 +496,11 @@ dynamic linking/shared libraries, TLS, W^X/NX enforcement, the
 `SYSCALL`/`SYSRET` MSR fast path (`int 0x80` only for now), signals,
 `O_EXCL`/`rmdir`/`unlink` from userland,
 an `init` process/orphan reparenting, priority scheduling (Phase B is
-plain round-robin), and an actual musl (or similar) port capable of
+plain round-robin), an actual musl (or similar) port capable of
 building arbitrary third-party C source — the libc is still hand-
 written and intentionally small, proving the pattern rather than being
-generally reusable yet. These are natural next milestones
-from here.
+generally reusable yet — FPU/SSE context-switch support (`XSAVE`/
+`FXSAVE` per-task; both the kernel and userland build with `-mno-sse
+-mno-80387` today), and therefore real MP3 decoding (M17/M18 play WAV/
+PCM instead — see [play.md](play.md#why-wav-not-mp3)). These are
+natural next milestones from here.

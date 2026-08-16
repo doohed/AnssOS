@@ -83,3 +83,19 @@ long ioctl(int fd, unsigned long request, void *argp) {
 long getdents(int fd, struct dirent *out) {
     return syscall3(217, fd, (long)(unsigned long)out, 0);
 }
+
+int audio_open(unsigned int rate_hz, unsigned int channels) {
+    return (int)syscall3(900, rate_hz, channels, 0);
+}
+
+long audio_write(const void *buf, unsigned int len) {
+    return syscall3(901, (long)(unsigned long)buf, len, 0);
+}
+
+int audio_close(void) {
+    return (int)syscall3(902, 0, 0, 0);
+}
+
+int poll_key(void) {
+    return (int)syscall3(903, 0, 0, 0);
+}

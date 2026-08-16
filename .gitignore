@@ -3,6 +3,7 @@ kernel/bin/
 kernel/src/**/*.o
 kernel/src/**/*.d
 kernel/src/exec/*.elf.bin
+kernel/src/exec/*.wav.bin
 
 # Userland (test payload) build output
 userland/**/*.o
@@ -14,6 +15,7 @@ userland/*.elf
 /iso_root/
 /OVMF_VARS.local.fd
 /AnssOS-disk.img
+/AnssOS-audio-out.wav
 
 # Agents config
 .claude/
