@@ -96,6 +96,60 @@ else
     QEMU_AUDIODEV="wav,id=snd0,path=AnssOS-audio-out.wav"
 fi
 
+# Display resolution -- virtio-gpu's own xres/yres properties, which set
+# the mode the device reports to the guest at boot. Everything downstream
+# follows from it with no further configuration: console/fbconsole.c
+# derives its text grid as width/8 x height/8, and TIOCGWINSZ hands that
+# to full-screen programs (see docs/scarf.md).
+#
+# Asked interactively, but ONLY when stdin is a terminal. Scripted runs
+# pipe keystrokes into the guest's serial console, and a `read` here
+# would eat the first line of them -- so a non-interactive run silently
+# takes the default instead of hanging or stealing input. Set ANSSOS_RES
+# to skip the prompt either way, e.g. ANSSOS_RES=1920x1080.
+RESOLUTIONS=(
+    "1280x800"   # QEMU's own virtio-gpu default
+    "1920x1080"
+    "1600x900"
+    "1366x768"
+    "1280x720"
+    "1024x768"
+)
+DEFAULT_RES="1280x800"
+
+if [ -n "${ANSSOS_RES:-}" ]; then
+    RES="$ANSSOS_RES"
+elif [ -t 0 ]; then
+    echo "Display resolution:"
+    for i in "${!RESOLUTIONS[@]}"; do
+        mark=""
+        [ "${RESOLUTIONS[$i]}" = "$DEFAULT_RES" ] && mark="  (default)"
+        printf '  %d) %s%s\n' "$((i + 1))" "${RESOLUTIONS[$i]}" "$mark"
+    done
+    printf 'Choose [1-%d, or WxH, Enter for default]: ' "${#RESOLUTIONS[@]}"
+    # `|| choice=""` matters: read returns non-zero at EOF (Ctrl-D), and
+    # `set -e` would otherwise abort the whole script right here, with no
+    # message and no VM.
+    read -r choice || choice=""
+    if [ -z "$choice" ]; then
+        RES="$DEFAULT_RES"
+    elif [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] &&
+        [ "$choice" -le "${#RESOLUTIONS[@]}" ]; then
+        RES="${RESOLUTIONS[$((choice - 1))]}"
+    else
+        RES="$choice" # typed WxH directly; validated below
+    fi
+else
+    RES="$DEFAULT_RES"
+fi
+
+if [[ ! "$RES" =~ ^[0-9]+x[0-9]+$ ]]; then
+    echo "error: bad resolution '$RES' -- expected WxH, e.g. 1280x800" >&2
+    exit 1
+fi
+XRES="${RES%x*}"
+YRES="${RES#*x}"
+
 exec qemu-system-x86_64 \
     -M q35 \
     -m 512M \
@@ -103,7 +157,7 @@ exec qemu-system-x86_64 \
     -vga none \
     "${fw_args[@]}" \
     -cdrom "$ISO" \
-    -device virtio-gpu-pci \
+    -device virtio-gpu-pci,xres="$XRES",yres="$YRES" \
     -device virtio-keyboard-pci \
     -drive file="$DISK",if=none,id=disk0,format=raw \
     -device virtio-blk-pci,drive=disk0,disable-legacy=on \
