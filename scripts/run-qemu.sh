@@ -35,6 +35,12 @@ find_ovmf_split() {
         "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd"
         "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd"
         "/usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd"
+        # Homebrew's qemu ships its own edk2 build, so a Mac can run this
+        # script directly rather than only inside the container. Note the
+        # names don't match: there is no edk2-x86_64-vars.fd, the i386
+        # vars file is the correct pair for the x86_64 code blob.
+        "/opt/homebrew/share/qemu/edk2-x86_64-code.fd:/opt/homebrew/share/qemu/edk2-i386-vars.fd"
+        "/usr/local/share/qemu/edk2-x86_64-code.fd:/usr/local/share/qemu/edk2-i386-vars.fd"
     )
     for pair in "${candidates[@]}"; do
         local code="${pair%%:*}" vars="${pair##*:}"
@@ -65,17 +71,23 @@ else
 fi
 
 # Audio backend (M17, virtio-sound) -- auto-picks a real, audible
-# backend when one is actually reachable (PulseAudio/PipeWire via
-# `pactl`, else ALSA via `aplay`), so `play` just comes out of your
-# speakers by default. Falls back to QEMU's "wav" backend (captures to
-# AnssOS-audio-out.wav, gitignored like AnssOS-disk.img, instead of
-# speakers) only when neither is reachable -- e.g. a headless CI/sandbox
-# box with no audio setup at all -- so a boot never hard-fails here for
-# lack of sound hardware. Set QEMU_AUDIODEV yourself to override either
-# way, e.g. QEMU_AUDIODEV="coreaudio,id=snd0" on macOS, or force the wav
-# capture back on for a deterministic test: QEMU_AUDIODEV="wav,id=snd0,path=AnssOS-audio-out.wav".
+# backend when one is actually reachable: CoreAudio on macOS,
+# PulseAudio/PipeWire via `pactl` then ALSA via `aplay` on Linux, so
+# `play` just comes out of your speakers by default. Falls back to
+# QEMU's "wav" backend (captures to AnssOS-audio-out.wav, gitignored
+# like AnssOS-disk.img, instead of speakers) only when none is
+# reachable -- e.g. a headless CI/sandbox box, or the build container,
+# which has no audio setup at all -- so a boot never hard-fails here for
+# lack of sound hardware. Set QEMU_AUDIODEV yourself to override, e.g.
+# to force the wav capture back on for a deterministic test:
+# QEMU_AUDIODEV="wav,id=snd0,path=AnssOS-audio-out.wav".
 if [ -n "${QEMU_AUDIODEV:-}" ]; then
     : # explicit override wins, nothing to detect
+elif [ "$(uname -s)" = "Darwin" ]; then
+    # macOS has neither pactl nor aplay, so without this it fell through
+    # to the wav fallback below and captured to a file instead of making
+    # any sound -- which looks exactly like broken audio.
+    QEMU_AUDIODEV="coreaudio,id=snd0"
 elif command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then
     QEMU_AUDIODEV="pa,id=snd0"
 elif command -v aplay >/dev/null 2>&1 && aplay -l >/dev/null 2>&1; then
