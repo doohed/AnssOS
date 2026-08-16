@@ -2,10 +2,12 @@
 
 
 Needs `nasm`, `qemu-system-x86_64`, `qemu-img`, OVMF firmware, `xorriso`,
-and `mtools`:
+`mtools`, and `python3` (`scripts/gen-test-tone.py`/`scripts/disk-put.py`
+synthesize/inject audio assets -- see [play.md](play.md) -- and need real
+binary struct packing and float math bash doesn't have):
 
 ```sh
-sudo apt-get install -y nasm qemu-system-x86 qemu-utils ovmf xorriso mtools
+sudo apt-get install -y nasm qemu-system-x86 qemu-utils ovmf xorriso mtools python3
 ```
 
 Building and running are two separate scripts (`make`/`make run` are thin

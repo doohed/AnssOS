@@ -15,9 +15,15 @@ FROM debian:trixie-20260803-slim
 #
 #   build-iso.sh       -> make, $CC/$LD (clang + lld, see ENV below),
 #                         xorriso, and git for the limine submodule
-#   build-userland.sh  -> the same $CC/$LD
+#   build-userland.sh  -> the same $CC/$LD, plus python3
+#                         (gen-test-tone.py synthesizes a WAV fixture --
+#                         real binary struct packing and float math, not
+#                         a fit for bash -- see docs/play.md)
 #   run-qemu.sh        -> qemu-system-x86_64, qemu-img, OVMF firmware
 #   format.sh          -> clang-format
+#
+# disk-put.py (docs/play.md) is also python3 but isn't part of the build
+# -- it writes straight onto AnssOS-disk.img from the host, run by hand.
 #
 # mtools is the README's documented dependency for the ISO step; xorriso
 # builds the EFI boot partition itself here, but it's kept so the
@@ -42,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-system-x86 \
         qemu-utils \
         ovmf \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Self-configuring toolchain: both GNUmakefiles and build-userland.sh take
