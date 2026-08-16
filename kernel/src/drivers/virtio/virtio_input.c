@@ -18,6 +18,8 @@
 
 #define KEY_LEFTSHIFT 42
 #define KEY_RIGHTSHIFT 54
+#define KEY_LEFTCTRL 29
+#define KEY_RIGHTCTRL 97
 
 /* Layout mandated by the virtio spec ("Input configuration layout").
  * `select`/`subsel` bank-switch which member of the union is currently
@@ -53,6 +55,7 @@ static struct virtio_queue eventq;
 static struct virtio_input_event *event_bufs; /* HHDM-mapped, EVENTQ_BUFFERS entries. */
 
 static int shift_held;
+static int ctrl_held;
 static int initialized; /* Guards virtio_input_poll_char() if init never ran or failed. */
 
 /* US QWERTY: Linux key codes (see the kernel's input-event-codes.h) ->
@@ -220,6 +223,17 @@ int virtio_input_poll_char(void) {
             continue;
         }
 
+        /* Tracked like shift, and checked before the KEYMAP_LOWER bounds
+         * test below because KEY_RIGHTCTRL (97) sits well past the end of
+         * that table. Needed for userland/scarf.c's vim window commands,
+         * which are all Ctrl-w prefixed -- over serial the terminal
+         * produces the 0x17 control byte itself, so this only ever
+         * mattered in a graphical window. */
+        if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
+            ctrl_held = (ev.value != 0);
+            continue;
+        }
+
         if (ev.value != 1 && ev.value != 2) {
             continue; /* Only care about press (1) and repeat (2), not release (0). */
         }
@@ -228,7 +242,9 @@ int virtio_input_poll_char(void) {
             continue;
         }
         char c = KEYMAP_LOWER[ev.code];
-        if (shift_held && KEYMAP_UPPER[ev.code] != '\0') {
+        if (ctrl_held && c >= 'a' && c <= 'z') {
+            c = (char)(c - 'a' + 1); /* Ctrl-A..Ctrl-Z -> 0x01..0x1a, as a terminal sends. */
+        } else if (shift_held && KEYMAP_UPPER[ev.code] != '\0') {
             c = KEYMAP_UPPER[ev.code];
         } else if (shift_held && c >= 'a' && c <= 'z') {
             c = (char)(c - 'a' + 'A');

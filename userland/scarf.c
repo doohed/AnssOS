@@ -1,15 +1,29 @@
-/* A small modal text editor with vim keybindings -- the first AnssOS
- * program that draws a full screen rather than scrolling log lines past.
+/* A small modal text editor with vim keybindings and a file-explorer
+ * sidebar -- the first AnssOS program that draws a full screen rather
+ * than scrolling log lines past.
  *
  * Three things had to exist in the kernel before this was possible, all
  * added alongside it: TIOCGWINSZ (there was no way to ask how big the
  * terminal is), O_TRUNC (writes only ever grew a file, so saving a
  * shortened buffer left the old tail behind), and an ANSI/CSI parser in
  * console/fbconsole.c (cursor addressing had nowhere to land -- escape
- * sequences were drawn as literal glyphs). Escape and the shifted symbol
- * row also had to be added to the virtio-input keymap; without them
- * there was no way to leave insert mode or type ':' in a graphical
- * window.
+ * sequences were drawn as literal glyphs). Escape, the shifted symbol
+ * row, and Ctrl also had to be added to the virtio-input keymap; without
+ * them there was no way to leave insert mode, type ':', or press a
+ * Ctrl-shortcut in a graphical window.
+ *
+ * The sidebar is built on M15's opendir()/readdir() -- it's the first
+ * thing in the tree that actually uses them for something other than a
+ * self-test.
+ *
+ * Window splits were tried and removed: tiled panes can't use ESC[K to
+ * clear a line (it would erase the pane beside it), so every cell had to
+ * be padded with spaces, which meant ~20 KB of output per keystroke.
+ * The layout here is deliberately one editor pane reaching the right
+ * edge, so it can clear with ESC[K and write only as many bytes as the
+ * text actually occupies. The sidebar does still pad (something is to
+ * its right), so it's redrawn only when it changes rather than on every
+ * keystroke.
  *
  * Deliberately not supported, to keep this reviewable: visual mode,
  * registers/yank/put, undo, and search. The cursor is drawn as a
@@ -17,9 +31,10 @@
  * because that renders identically on the framebuffer console and over
  * serial.
  *
- * There's no argv in AnssOS yet (execve takes a path and nothing else),
- * so the file to edit is named from inside the editor with `:e <path>`
- * rather than on a command line. */
+ * Takes an optional path: a directory opens the sidebar there, a file
+ * opens straight into the editor. `scarf .` therefore edits in whatever
+ * directory the shell was sitting in, since a task now inherits its
+ * launcher's cwd rather than always starting at the root. */
 
 #include "libc.h"
 
@@ -27,8 +42,17 @@
 #define MODE_INSERT 1
 #define MODE_COMMAND 2
 
-#define STATUS_ROWS 2 /* Status line + message/command line. */
+#define FOCUS_EDITOR 0
+#define FOCUS_SIDEBAR 1
+
+#define MAX_ENTRIES 128
+#define NAME_MAX 64
+#define PATH_MAX 128
+#define SIDEBAR_W 28
 #define TAB_STOP 4
+
+#define CTRL_B 0x02 /* Toggle the sidebar -- same key VS Code uses. */
+#define CTRL_E 0x05 /* Move focus between the sidebar and the editor. */
 
 struct erow {
     char *chars;
@@ -36,22 +60,37 @@ struct erow {
     int cap;
 };
 
+struct entry {
+    char name[NAME_MAX];
+    int isdir;
+};
+
 static struct erow *rows;
 static int numrows;
 static int rowcap;
+static char filename[PATH_MAX];
+static int dirty;
 
 static int cx, cy;         /* Cursor, in file coordinates. */
-static int rowoff, coloff; /* Top-left of the viewport. */
+static int rowoff, coloff; /* Top-left of the editor viewport. */
+
 static int screenrows, screencols;
-static int textrows; /* screenrows - STATUS_ROWS. */
 static int mode;
-static int dirty;
+static int focus;
 static int quit;
-static char filename[128];
-static char message[128];
-static char cmdbuf[128];
+static char message[PATH_MAX];
+static char cmdbuf[PATH_MAX];
 static int cmdlen;
 static int pending; /* A half-typed operator: 'd' or 'g', else 0. */
+
+static int sidebar_visible = 1;
+static int sidebar_w;
+static struct entry entries[MAX_ENTRIES];
+static int nentries;
+static int sel;    /* Selected row in the sidebar. */
+static int seloff; /* First visible sidebar row. */
+static char cwd_path[PATH_MAX] = "/";
+static int sidebar_dirty = 1; /* Repaint the sidebar on the next refresh. */
 
 static struct termios orig_termios;
 
@@ -80,6 +119,37 @@ static void str_copy(char *dest, int destcap, const char *src) {
 
 static void set_message(const char *s) {
     str_copy(message, (int)sizeof(message), s);
+}
+
+/* "/" + "foo" -> "/foo";  "/a" + "foo" -> "/a/foo". */
+static void path_join(char *out, int cap, const char *dir, const char *name) {
+    int n = 0;
+    for (int i = 0; dir[i] != '\0' && n < cap - 1; i++) {
+        out[n++] = dir[i];
+    }
+    if (n > 0 && out[n - 1] != '/' && n < cap - 1) {
+        out[n++] = '/';
+    }
+    for (int i = 0; name[i] != '\0' && n < cap - 1; i++) {
+        out[n++] = name[i];
+    }
+    out[n] = '\0';
+}
+
+/* Strips the last component in place: "/a/b" -> "/a", "/a" -> "/". */
+static void path_parent(char *p) {
+    int last = -1;
+    for (int i = 0; p[i] != '\0'; i++) {
+        if (p[i] == '/') {
+            last = i;
+        }
+    }
+    if (last <= 0) {
+        p[0] = '/';
+        p[1] = '\0';
+        return;
+    }
+    p[last] = '\0';
 }
 
 /* ---------- output buffer: one write() per redraw ---------- */
@@ -130,13 +200,11 @@ static void ab_int(struct abuf *ab, int v) {
     }
 }
 
-/* Places the cursor at a 1-based row/column. Every line this editor draws
- * is positioned explicitly rather than separated by \r\n, because a line
- * that exactly fills the width auto-wraps to the next row -- and a
- * trailing newline after it would then advance a *second* time, drifting
- * the frame down a row per redraw until the screen scrolls and leaves a
- * stale duplicate behind. The status bar is deliberately full-width, so
- * this is the normal case here, not a corner one. */
+/* Places the cursor at a 1-based row/column. Every line is positioned
+ * explicitly rather than separated by \r\n: a line that exactly fills the
+ * width auto-wraps to the next row, and a trailing newline after it would
+ * then advance a *second* time, drifting the frame down a row per redraw
+ * until the screen scrolls and leaves a stale duplicate behind. */
 static void ab_goto(struct abuf *ab, int row, int col) {
     ab_str(ab, "\x1b[");
     ab_int(ab, row);
@@ -272,7 +340,7 @@ static int file_open(const char *path) {
         }
     }
     if (linelen > 0) {
-        row_insert(numrows, line, linelen); /* Final line with no trailing newline. */
+        row_insert(numrows, line, linelen); /* Final line, no trailing newline. */
     }
     free(line);
     close(fd);
@@ -288,7 +356,7 @@ static int file_open(const char *path) {
 
 static int file_save(void) {
     if (filename[0] == '\0') {
-        set_message("no file name -- use :e <path> first");
+        set_message("no file name -- use :w <path>");
         return -1;
     }
 
@@ -315,13 +383,89 @@ static int file_save(void) {
         return -1;
     }
     dirty = 0;
+    sidebar_dirty = 1; /* A new file may have appeared in the listing. */
     set_message("written");
     return 0;
 }
 
+/* ---------- sidebar ---------- */
+
+static void sidebar_load(void) {
+    nentries = 0;
+    sel = 0;
+    seloff = 0;
+    sidebar_dirty = 1;
+
+    /* ".." first, so going back up is always the top entry -- the VFS
+     * itself resolves "..", this is only the listing convention. */
+    if (strcmp(cwd_path, "/") != 0) {
+        str_copy(entries[nentries].name, NAME_MAX, "..");
+        entries[nentries].isdir = 1;
+        nentries++;
+    }
+
+    DIR *d = opendir(cwd_path);
+    if (d == NULL) {
+        set_message("cannot open directory");
+        return;
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && nentries < MAX_ENTRIES) {
+        str_copy(entries[nentries].name, NAME_MAX, e->d_name);
+        entries[nentries].isdir = (e->d_type == DT_DIR);
+        nentries++;
+    }
+    closedir(d);
+}
+
+static void sidebar_activate(void) {
+    if (sel < 0 || sel >= nentries) {
+        return;
+    }
+    struct entry *e = &entries[sel];
+
+    if (e->isdir) {
+        if (strcmp(e->name, "..") == 0) {
+            path_parent(cwd_path);
+        } else {
+            char next[PATH_MAX];
+            path_join(next, sizeof(next), cwd_path, e->name);
+            str_copy(cwd_path, sizeof(cwd_path), next);
+        }
+        sidebar_load();
+        return;
+    }
+
+    if (dirty) {
+        set_message("unsaved changes -- :w first, or :e! to discard");
+        return;
+    }
+    char full[PATH_MAX];
+    path_join(full, sizeof(full), cwd_path, e->name);
+    file_open(full);
+    focus = FOCUS_EDITOR;
+    sidebar_dirty = 1;
+}
+
 /* ---------- rendering ---------- */
 
+static int editor_x(void) {
+    return sidebar_visible ? sidebar_w + 1 : 0; /* +1 for the separator column. */
+}
+
+static int editor_w(void) {
+    int w = screencols - editor_x();
+    return w > 1 ? w : 1;
+}
+
+static int editor_rows(void) {
+    int h = screenrows - 2; /* Editor status line, then the message line. */
+    return h > 1 ? h : 1;
+}
+
 static void scroll_to_cursor(void) {
+    int textrows = editor_rows();
+    int width = editor_w();
     if (cy < rowoff) {
         rowoff = cy;
     }
@@ -331,15 +475,24 @@ static void scroll_to_cursor(void) {
     if (cx < coloff) {
         coloff = cx;
     }
-    if (cx >= coloff + screencols) {
-        coloff = cx - screencols + 1;
+    if (cx >= coloff + width) {
+        coloff = cx - width + 1;
     }
 }
 
-static void draw_rows(struct abuf *ab) {
+/* The editor pane reaches the right edge, so it can clear each line with
+ * ESC[K instead of padding out to the full width -- the difference
+ * between writing a few hundred bytes per redraw and ~20 KB. */
+static void draw_editor(struct abuf *ab) {
+    int textrows = editor_rows();
+    int x = editor_x();
+    int width = editor_w();
+    int show_cursor = (focus == FOCUS_EDITOR && mode != MODE_COMMAND);
+
     for (int y = 0; y < textrows; y++) {
         int filerow = y + rowoff;
-        ab_goto(ab, y + 1, 1);
+        ab_goto(ab, y + 1, x + 1);
+
         if (filerow >= numrows) {
             ab_str(ab, "~");
         } else {
@@ -348,23 +501,25 @@ static void draw_rows(struct abuf *ab) {
             if (len < 0) {
                 len = 0;
             }
-            if (len > screencols) {
-                len = screencols;
+            if (len > width) {
+                len = width;
             }
-            int cursor_here = (mode != MODE_COMMAND && filerow == cy);
+            int written = 0;
             for (int i = 0; i < len; i++) {
-                if (cursor_here && coloff + i == cx) {
+                int is_cursor = show_cursor && filerow == cy && coloff + i == cx;
+                if (is_cursor) {
                     ab_str(ab, "\x1b[7m");
-                    ab_append(ab, &r->chars[coloff + i], 1);
-                    ab_str(ab, "\x1b[0m");
-                } else {
-                    ab_append(ab, &r->chars[coloff + i], 1);
                 }
+                ab_append(ab, &r->chars[coloff + i], 1);
+                if (is_cursor) {
+                    ab_str(ab, "\x1b[0m");
+                }
+                written++;
             }
-            /* Cursor sitting past the last character (end of line, or an
-             * empty line) still needs to be visible -- draw it as a
-             * highlighted space. */
-            if (cursor_here && cx >= r->len && cx - coloff < screencols) {
+            /* Cursor past the last character (end of line, or an empty
+             * line) still needs to be visible. */
+            if (show_cursor && filerow == cy && cx >= r->len && cx - coloff == written &&
+                written < width) {
                 ab_str(ab, "\x1b[7m \x1b[0m");
             }
         }
@@ -373,26 +528,18 @@ static void draw_rows(struct abuf *ab) {
 }
 
 static void draw_status(struct abuf *ab) {
-    ab_goto(ab, textrows + 1, 1);
-    ab_str(ab, "\x1b[7m");
-    int used = 0;
-
-    const char *name = filename[0] != '\0' ? filename : "[no name]";
-    ab_str(ab, name);
-    used += (int)strlen(name);
+    struct abuf left = {NULL, 0, 0};
+    ab_str(&left, filename[0] != '\0' ? filename : "[no name]");
     if (dirty) {
-        ab_str(ab, " [+]");
-        used += 4;
+        ab_str(&left, " [+]");
+    }
+    if (mode == MODE_INSERT) {
+        ab_str(&left, "  -- INSERT --");
+    }
+    if (focus == FOCUS_SIDEBAR) {
+        ab_str(&left, "  -- FILES --");
     }
 
-    const char *modestr = mode == MODE_INSERT    ? "  -- INSERT --"
-                          : mode == MODE_COMMAND ? "  -- COMMAND --"
-                                                 : "";
-    ab_str(ab, modestr);
-    used += (int)strlen(modestr);
-
-    /* Right-hand side: line/total and column, padded out so the inverted
-     * bar spans the full width. */
     struct abuf right = {NULL, 0, 0};
     ab_int(&right, cy + 1);
     ab_str(&right, "/");
@@ -400,19 +547,109 @@ static void draw_status(struct abuf *ab) {
     ab_str(&right, " col ");
     ab_int(&right, cx + 1);
 
-    int pad = screencols - used - right.len;
-    for (int i = 0; i < pad; i++) {
+    int x = editor_x();
+    int width = editor_w();
+    ab_goto(ab, screenrows - 1, x + 1);
+    ab_str(ab, "\x1b[7m");
+
+    int written = 0;
+    for (int i = 0; i < left.len && written < width; i++, written++) {
+        ab_append(ab, &left.b[i], 1);
+    }
+    int pad = width - written - right.len;
+    for (int i = 0; i < pad; i++, written++) {
         ab_str(ab, " ");
     }
-    if (right.len > 0 && pad >= 0) {
-        ab_append(ab, right.b, right.len);
+    if (pad >= 0) {
+        for (int i = 0; i < right.len && written < width; i++, written++) {
+            ab_append(ab, &right.b[i], 1);
+        }
     }
-    free(right.b);
+    while (written < width) {
+        ab_str(ab, " ");
+        written++;
+    }
+
     ab_str(ab, "\x1b[0m");
+    free(left.b);
+    free(right.b);
+}
+
+/* Padded to its own width, because the editor pane sits to its right --
+ * ESC[K here would wipe the text. Hence sidebar_dirty: this only runs
+ * when the listing, selection, or focus actually changed, not on every
+ * keystroke typed into the editor. */
+static void draw_sidebar(struct abuf *ab) {
+    int visible = screenrows - 2; /* Header row, then entries, above the message line. */
+    if (visible < 1) {
+        visible = 1;
+    }
+
+    if (sel < seloff) {
+        seloff = sel;
+    }
+    if (sel >= seloff + visible - 1) {
+        seloff = sel - visible + 2;
+    }
+    if (seloff < 0) {
+        seloff = 0;
+    }
+
+    /* Header: the directory being listed, right-truncated to fit. */
+    ab_goto(ab, 1, 1);
+    ab_str(ab, "\x1b[7m");
+    int written = 0;
+    for (int i = 0; cwd_path[i] != '\0' && written < sidebar_w; i++, written++) {
+        ab_append(ab, &cwd_path[i], 1);
+    }
+    while (written < sidebar_w) {
+        ab_str(ab, " ");
+        written++;
+    }
+    ab_str(ab, "\x1b[0m");
+
+    for (int y = 1; y < visible; y++) {
+        int idx = seloff + y - 1;
+        ab_goto(ab, y + 1, 1);
+
+        written = 0;
+        int selected = (idx == sel && idx < nentries);
+        if (selected) {
+            ab_str(ab, focus == FOCUS_SIDEBAR ? "\x1b[7m" : "\x1b[7m");
+        }
+        if (idx < nentries) {
+            struct entry *e = &entries[idx];
+            /* A marker rather than a colour: this console has no SGR
+             * colour support, only reverse video. */
+            const char *mark = e->isdir ? "> " : "  ";
+            for (int i = 0; mark[i] != '\0' && written < sidebar_w; i++, written++) {
+                ab_append(ab, &mark[i], 1);
+            }
+            for (int i = 0; e->name[i] != '\0' && written < sidebar_w; i++, written++) {
+                ab_append(ab, &e->name[i], 1);
+            }
+            if (e->isdir && written < sidebar_w) {
+                ab_str(ab, "/");
+                written++;
+            }
+        }
+        while (written < sidebar_w) {
+            ab_str(ab, " ");
+            written++;
+        }
+        if (selected) {
+            ab_str(ab, "\x1b[0m");
+        }
+    }
+
+    for (int y = 0; y < screenrows - 1; y++) {
+        ab_goto(ab, y + 1, sidebar_w + 1);
+        ab_str(ab, "|");
+    }
 }
 
 static void draw_message(struct abuf *ab) {
-    ab_goto(ab, textrows + 2, 1);
+    ab_goto(ab, screenrows, 1);
     if (mode == MODE_COMMAND) {
         ab_str(ab, ":");
         ab_append(ab, cmdbuf, cmdlen);
@@ -428,13 +665,32 @@ static void refresh(void) {
 
     struct abuf ab = {NULL, 0, 0};
     ab_str(&ab, "\x1b[?25l"); /* Hide the real cursor; we draw our own. */
-    draw_rows(&ab);
+    if (sidebar_visible && sidebar_dirty) {
+        draw_sidebar(&ab);
+        sidebar_dirty = 0;
+    }
+    draw_editor(&ab);
     draw_status(&ab);
     draw_message(&ab);
     if (ab.len > 0) {
         write(1, ab.b, (unsigned long)ab.len);
     }
     free(ab.b);
+}
+
+static void toggle_sidebar(void) {
+    sidebar_visible = !sidebar_visible;
+    if (sidebar_visible) {
+        sidebar_dirty = 1;
+    } else {
+        focus = FOCUS_EDITOR;
+    }
+    /* The editor pane changes width either way, and when the sidebar
+     * goes away it has to repaint the columns the sidebar occupied --
+     * ESC[K on each editor line does that, since the pane now starts at
+     * column 0. Clearing the screen keeps the separator from lingering. */
+    write(1, "\x1b[2J", 4);
+    coloff = 0;
 }
 
 /* ---------- motions and edits ---------- */
@@ -486,6 +742,12 @@ static void move_word_back(void) {
     if (r == NULL) {
         return;
     }
+    if (cx == 0 && cy > 0) {
+        cy--;
+        struct erow *prev = cur_row();
+        cx = prev != NULL && prev->len > 0 ? prev->len - 1 : 0;
+        return;
+    }
     int i = cx - 1;
     while (i > 0 && !is_word(r->chars[i])) {
         i--;
@@ -495,12 +757,6 @@ static void move_word_back(void) {
     }
     if (i < 0) {
         i = 0;
-    }
-    if (cx == 0 && cy > 0) {
-        cy--;
-        struct erow *prev = cur_row();
-        cx = prev != NULL && prev->len > 0 ? prev->len - 1 : 0;
-        return;
     }
     cx = i;
 }
@@ -619,10 +875,12 @@ static void run_command(void) {
         }
     } else if (strncmp(cmdbuf, "e ", 2) == 0) {
         if (dirty) {
-            set_message("unsaved changes -- :w first, or :q! to discard");
+            set_message("unsaved changes -- :w first, or :e! to discard");
         } else {
             file_open(&cmdbuf[2]);
         }
+    } else if (strncmp(cmdbuf, "e! ", 3) == 0) {
+        file_open(&cmdbuf[3]);
     } else if (strncmp(cmdbuf, "w ", 2) == 0) {
         str_copy(filename, (int)sizeof(filename), &cmdbuf[2]);
         file_save();
@@ -636,6 +894,58 @@ static void run_command(void) {
 }
 
 /* ---------- key dispatch ---------- */
+
+static void key_sidebar(char c) {
+    switch (c) {
+        case 'j':
+            if (sel + 1 < nentries) {
+                sel++;
+                sidebar_dirty = 1;
+            }
+            break;
+        case 'k':
+            if (sel > 0) {
+                sel--;
+                sidebar_dirty = 1;
+            }
+            break;
+        case 'g':
+            sel = 0;
+            sidebar_dirty = 1;
+            break;
+        case 'G':
+            sel = nentries > 0 ? nentries - 1 : 0;
+            sidebar_dirty = 1;
+            break;
+        case '\r':
+        case '\n':
+        case 'l':
+            sidebar_activate();
+            break;
+        case 'h':
+        case '-':
+            path_parent(cwd_path);
+            sidebar_load();
+            break;
+        case 'r':
+            sidebar_load(); /* Re-read: files the editor created show up. */
+            set_message("refreshed");
+            break;
+        case 0x1b:
+            focus = FOCUS_EDITOR;
+            sidebar_dirty = 1;
+            break;
+        case ':':
+            focus = FOCUS_EDITOR;
+            sidebar_dirty = 1;
+            mode = MODE_COMMAND;
+            cmdlen = 0;
+            message[0] = '\0';
+            break;
+        default:
+            break;
+    }
+}
 
 static void key_normal(char c) {
     if (pending == 'd') {
@@ -839,13 +1149,20 @@ static void get_window_size(void) {
         screencols = 80;
         screenrows = 24;
     }
-    textrows = screenrows - STATUS_ROWS;
-    if (textrows < 1) {
-        textrows = 1;
+    if (screenrows < 4) {
+        screenrows = 4;
+    }
+
+    sidebar_w = SIDEBAR_W;
+    if (sidebar_w > screencols / 3) {
+        sidebar_w = screencols / 3; /* Never let the sidebar crowd out the text. */
+    }
+    if (sidebar_w < 8) {
+        sidebar_w = 8;
     }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     if (raw_mode_on() != 0) {
         printf("scarf: cannot put the terminal in raw mode\n");
         exit(1);
@@ -854,8 +1171,44 @@ int main(void) {
 
     row_insert(0, "", 0);
     dirty = 0;
-    set_message("scarf -- :e <file> to open, i to insert, Esc for normal, :w :q");
 
+    /* Start where the shell was rather than at the root -- getcwd()
+     * resolves the inherited cwd to an absolute path, so the sidebar
+     * header shows a real location instead of the literal "." that may
+     * have been passed as the argument. */
+    if (getcwd(cwd_path, sizeof(cwd_path)) != 0) {
+        str_copy(cwd_path, sizeof(cwd_path), "/");
+    }
+
+    /* argv[1], if given, is either a directory to browse or a file to
+     * open. Which one is decided by trying opendir() on it: that fails
+     * on a regular file, which is exactly the test needed. */
+    focus = FOCUS_SIDEBAR;
+    if (argc > 1) {
+        char target[PATH_MAX];
+        if (argv[1][0] == '/') {
+            str_copy(target, sizeof(target), argv[1]);
+        } else {
+            path_join(target, sizeof(target), cwd_path, argv[1]);
+        }
+        /* chdir() is the directory test, not opendir(): opendir() is just
+         * open(path, O_RDONLY), which succeeds on a regular file too, so
+         * it can't tell the two apart. chdir() rejects anything that
+         * isn't a directory. It also canonicalises as a side effect --
+         * getcwd() afterwards turns `scarf .` into "/docs" rather than
+         * displaying the literal "/docs/.". */
+        if (chdir(target) == 0) {
+            getcwd(cwd_path, sizeof(cwd_path));
+        } else {
+            file_open(target);
+            focus = FOCUS_EDITOR;
+        }
+    }
+
+    sidebar_load();
+    set_message("scarf -- Ctrl-b files, Ctrl-e switch pane, Enter open, i insert, :w :q");
+
+    write(1, "\x1b[2J", 4);
     while (!quit) {
         refresh();
 
@@ -863,12 +1216,30 @@ int main(void) {
         if (read(0, &c, 1) != 1) {
             continue;
         }
-        if (mode == MODE_NORMAL) {
-            key_normal(c);
+
+        /* The two pane shortcuts work from anywhere except while a
+         * command line or an insert is in progress, where the raw byte
+         * belongs to whatever's being typed. */
+        if (mode == MODE_NORMAL && c == CTRL_B) {
+            toggle_sidebar();
+            continue;
+        }
+        if (mode == MODE_NORMAL && c == CTRL_E) {
+            if (sidebar_visible) {
+                focus = (focus == FOCUS_EDITOR) ? FOCUS_SIDEBAR : FOCUS_EDITOR;
+                sidebar_dirty = 1;
+            }
+            continue;
+        }
+
+        if (mode == MODE_COMMAND) {
+            key_command(c);
         } else if (mode == MODE_INSERT) {
             key_insert(c);
+        } else if (focus == FOCUS_SIDEBAR) {
+            key_sidebar(c);
         } else {
-            key_command(c);
+            key_normal(c);
         }
     }
 

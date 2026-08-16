@@ -56,7 +56,8 @@ struct process {
  * `parent_pid` as its parent -- KERNEL_PARENT_PID for a top-level
  * process launched directly by the shell. Returns the new pid, or -1 on
  * failure (reports why via kprintf, same as elf_load()). */
-int process_spawn(const uint8_t *image, size_t image_size, int parent_pid);
+int process_spawn(const uint8_t *image, size_t image_size, int argc, const char *const *argv,
+                  struct vnode *cwd, int parent_pid);
 
 /* fork(): duplicates `parent`'s address space (full page copy, no COW --
  * see vmm_clone_user_pages(), mm/vmm.h), heap range, open files, and cwd
@@ -77,7 +78,8 @@ int process_fork(struct process *parent, struct interrupt_frame *frame);
  * running, exactly as if exec() had simply returned -1 like any other
  * failed syscall); on success there's nothing more to report -- the
  * caller finds out only by actually running the new program. */
-int process_exec(struct process *p, const uint8_t *image, size_t image_size);
+int process_exec(struct process *p, const uint8_t *image, size_t image_size, int argc,
+                 const char *const *argv);
 
 struct process *process_by_pid(int pid);
 

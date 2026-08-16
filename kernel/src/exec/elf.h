@@ -19,6 +19,7 @@
  * enforcement in this first pass), plus a user stack and a kernel stack.
  * Returns 0 on success (with `out` populated) or -1 on a malformed/
  * unsupported file (reports why via kprintf). */
-int elf_load(const uint8_t *image, size_t image_size, struct usertask *out);
+int elf_load(const uint8_t *image, size_t image_size, int argc, const char *const *argv,
+             struct vnode *cwd, struct usertask *out);
 
 #endif

@@ -51,7 +51,14 @@ struct __attribute__((packed)) elf64_phdr {
 #define USER_STACK_TOP 0x0000700000000000ull
 #define USER_STACK_PAGES 4 /* 16 KiB */
 
-int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
+/* Caps on the argument vector. Generous next to a 16 KiB stack (16 args
+ * of 128 bytes is 2 KiB), and bounded so a caller can't push the initial
+ * stack down past the pages actually mapped for it. */
+#define MAX_ARGS 16
+#define MAX_ARG_LEN 128
+
+int elf_load(const uint8_t *image, size_t image_size, int argc, const char *const *argv,
+             struct vnode *cwd, struct usertask *out) {
     memset(out, 0, sizeof(*out)); /* open_files[].vnode == NULL (free) for every slot. */
 
     if (image_size < sizeof(struct elf64_ehdr)) {
@@ -145,13 +152,74 @@ int elf_load(const uint8_t *image, size_t image_size, struct usertask *out) {
         heap_base = 0x600000; /* No PT_LOAD segments (degenerate) -- a safe fallback. */
     }
 
+    /* Build the System V AMD64 process-initialization stack. At entry RSP
+     * points at argc, immediately followed by the argv pointer array, its
+     * NULL terminator, an empty envp array and an empty auxv vector; the
+     * argument strings themselves sit higher up. crt0.S reads argc/argv
+     * straight off this, which is why adding arguments changes the entry
+     * ABI for every payload at once.
+     *
+     * Written through the HHDM rather than through the new address space:
+     * the stack pages come from one pmm_alloc_pages() run, so they're
+     * physically contiguous and `stack_kernel + (uaddr - user_stack_base)`
+     * addresses any of them without switching CR3. */
+    uint8_t *stack_kernel = vmm_phys_to_virt(user_stack_phys);
+    uint64_t user_sp = USER_STACK_TOP;
+    uint64_t arg_ptrs[MAX_ARGS];
+
+    int nargs = argc;
+    if (nargs < 0) {
+        nargs = 0;
+    }
+    if (nargs > MAX_ARGS) {
+        nargs = MAX_ARGS;
+    }
+
+    for (int i = nargs - 1; i >= 0; i--) {
+        size_t len = strlen(argv[i]);
+        if (len > MAX_ARG_LEN - 1) {
+            len = MAX_ARG_LEN - 1;
+        }
+        user_sp -= len + 1;
+        char *dest = (char *)(stack_kernel + (user_sp - user_stack_base));
+        memcpy(dest, argv[i], len);
+        dest[len] = '\0';
+        arg_ptrs[i] = user_sp;
+    }
+
+    /* argc, argv[nargs], the argv NULL, the envp NULL, and AT_NULL's
+     * key/value pair. Aligned down afterwards, which only ever leaves
+     * more room, never less. */
+    user_sp -= (1 + (uint64_t)nargs + 1 + 1 + 2) * 8;
+    user_sp &= ~(uint64_t)0xf;
+
+    if (user_sp < user_stack_base) {
+        kprintf("elf: argument vector does not fit in the user stack\n");
+        return -1;
+    }
+
+    uint64_t *frame = (uint64_t *)(stack_kernel + (user_sp - user_stack_base));
+    size_t slot = 0;
+    frame[slot++] = (uint64_t)nargs;
+    for (int i = 0; i < nargs; i++) {
+        frame[slot++] = arg_ptrs[i];
+    }
+    frame[slot++] = 0; /* argv terminator */
+    frame[slot++] = 0; /* envp[0] -- no environment yet */
+    frame[slot++] = 0; /* auxv AT_NULL key */
+    frame[slot++] = 0; /* auxv AT_NULL value */
+
     out->entry = eh->e_entry;
-    out->user_stack_top = USER_STACK_TOP;
+    out->user_stack_top = user_sp;
     out->kernel_stack_top = (uint64_t)(uintptr_t)(kernel_stack + ELF_KERNEL_STACK_SIZE);
     out->as = as;
     out->heap_start = heap_base;
     out->heap_end = heap_base; /* Zero-size until the first brk(). */
-    out->cwd = vfs_root();
+    /* Inherits the launching shell's directory (or the exec'ing task's).
+     * M12 deliberately started every task at the root instead; that made
+     * `scarf .` meaningless, since "." always resolved to / no matter
+     * where it was launched from. */
+    out->cwd = cwd != NULL ? cwd : vfs_root();
     out->termios.c_lflag = ICANON | ECHO; /* Today's actual default behavior, made explicit. */
     out->termios.c_cc[VMIN] = 1;
     out->termios.c_cc[VTIME] = 0;

@@ -17,7 +17,8 @@ int main(void) {
 
     if (pid == 0) {
         printf("child: pid=%d, about to exec forkchild.bin\n", getpid());
-        execve("/forkchild.bin");
+        char *const child_argv[] = {"forkchild", NULL};
+        execve("/bin/forkchild", child_argv);
         printf("child: execve failed!\n"); /* unreachable on success */
         exit(99);
     }

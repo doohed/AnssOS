@@ -74,14 +74,15 @@ struct process *process_find_child(int parent_pid, int pid) {
     return any;
 }
 
-int process_spawn(const uint8_t *image, size_t image_size, int parent_pid) {
+int process_spawn(const uint8_t *image, size_t image_size, int argc, const char *const *argv,
+                  struct vnode *cwd, int parent_pid) {
     struct process *p = alloc_slot();
     if (p == NULL) {
         kprintf("process: too many processes (max %d)\n", MAX_PROCESSES);
         return -1;
     }
 
-    if (elf_load(image, image_size, &p->task) != 0) {
+    if (elf_load(image, image_size, argc, argv, cwd, &p->task) != 0) {
         return -1;
     }
 
@@ -141,7 +142,8 @@ int process_fork(struct process *parent, struct interrupt_frame *frame) {
     return child->pid;
 }
 
-int process_exec(struct process *p, const uint8_t *image, size_t image_size) {
+int process_exec(struct process *p, const uint8_t *image, size_t image_size, int argc,
+                 const char *const *argv) {
     struct open_file saved_files[MAX_OPEN_FILES];
     memcpy(saved_files, p->task.open_files, sizeof(saved_files));
     struct vnode *saved_cwd = p->task.cwd;
@@ -160,7 +162,7 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size) {
     memcpy(saved_kernel_resume, p->task.kernel_resume, sizeof(saved_kernel_resume));
 
     struct usertask new_task;
-    if (elf_load(image, image_size, &new_task) != 0) {
+    if (elf_load(image, image_size, argc, argv, saved_cwd, &new_task) != 0) {
         return -1;
     }
 

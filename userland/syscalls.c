@@ -60,8 +60,12 @@ int fork(void) {
     return (int)syscall3(57, 0, 0, 0);
 }
 
-int execve(const char *path) {
-    return (int)syscall3(59, (long)(unsigned long)path, 0, 0);
+int execve(const char *path, char *const argv[]) {
+    return (int)syscall3(59, (long)(unsigned long)path, (long)(unsigned long)argv, 0);
+}
+
+int getcwd(char *buf, unsigned long size) {
+    return (int)syscall3(79, (long)(unsigned long)buf, (long)size, 0);
 }
 
 int waitpid(int pid, int *status) {

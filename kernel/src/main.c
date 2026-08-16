@@ -213,32 +213,38 @@ void kmain(void) {
          * own fixture -- a known file for it to open/read/write/lseek
          * against. dirtest.bin needs no fixture -- it creates its own
          * directory and file via mkdir()/O_CREAT. */
-        vfs_write_bytes(vfs_root(), "hello.bin", hello_elf_start,
-                        (size_t)(hello_elf_end - hello_elf_start));
-        vfs_write_bytes(vfs_root(), "crash.bin", crash_elf_start,
-                        (size_t)(crash_elf_end - crash_elf_start));
-        vfs_write_bytes(vfs_root(), "malloctest.bin", malloctest_elf_start,
+        /* Programs live in /bin, which the shell searches for bare
+         * command names (see shell.c's resolve_program()) -- so `scarf`
+         * works from any directory, not just the one holding it. */
+        vfs_mkdir(vfs_root(), "bin");
+        struct vnode *bin = vfs_resolve(vfs_root(), "/bin");
+        if (bin == NULL) {
+            bin = vfs_root(); /* mkdir failed -- fall back to the old layout. */
+        }
+
+        vfs_write_bytes(bin, "hello", hello_elf_start, (size_t)(hello_elf_end - hello_elf_start));
+        vfs_write_bytes(bin, "crash", crash_elf_start, (size_t)(crash_elf_end - crash_elf_start));
+        vfs_write_bytes(bin, "malloctest", malloctest_elf_start,
                         (size_t)(malloctest_elf_end - malloctest_elf_start));
-        vfs_write_bytes(vfs_root(), "filetest.bin", filetest_elf_start,
+        vfs_write_bytes(bin, "filetest", filetest_elf_start,
                         (size_t)(filetest_elf_end - filetest_elf_start));
         vfs_write_file(vfs_root(), "filetest.txt", "hello file test\n", 0);
-        vfs_write_bytes(vfs_root(), "dirtest.bin", dirtest_elf_start,
+        vfs_write_bytes(bin, "dirtest", dirtest_elf_start,
                         (size_t)(dirtest_elf_end - dirtest_elf_start));
-        vfs_write_bytes(vfs_root(), "forktest.bin", forktest_elf_start,
+        vfs_write_bytes(bin, "forktest", forktest_elf_start,
                         (size_t)(forktest_elf_end - forktest_elf_start));
-        vfs_write_bytes(vfs_root(), "forkchild.bin", forkchild_elf_start,
+        vfs_write_bytes(bin, "forkchild", forkchild_elf_start,
                         (size_t)(forkchild_elf_end - forkchild_elf_start));
-        vfs_write_bytes(vfs_root(), "preempttest.bin", preempttest_elf_start,
+        vfs_write_bytes(bin, "preempttest", preempttest_elf_start,
                         (size_t)(preempttest_elf_end - preempttest_elf_start));
-        vfs_write_bytes(vfs_root(), "termtest.bin", termtest_elf_start,
+        vfs_write_bytes(bin, "termtest", termtest_elf_start,
                         (size_t)(termtest_elf_end - termtest_elf_start));
-        vfs_write_bytes(vfs_root(), "readdirtest.bin", readdirtest_elf_start,
+        vfs_write_bytes(bin, "readdirtest", readdirtest_elf_start,
                         (size_t)(readdirtest_elf_end - readdirtest_elf_start));
         /* Not a self-test fixture like the rest -- scarf.bin is an actual
          * tool (`run scarf.bin`), embedded the same way for the same
          * reason: there's no host-side way to get a file onto the VFS. */
-        vfs_write_bytes(vfs_root(), "scarf.bin", scarf_elf_start,
-                        (size_t)(scarf_elf_end - scarf_elf_start));
+        vfs_write_bytes(bin, "scarf", scarf_elf_start, (size_t)(scarf_elf_end - scarf_elf_start));
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

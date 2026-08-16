@@ -34,6 +34,7 @@
 #define SYS_wait4 61
 #define SYS_exit 60
 #define SYS_getdents 217
+#define SYS_getcwd 79
 
 /* ioctl() requests this project actually understands -- Linux's real
  * TCGETS/TCSETS values, so a program built the standard way (get
@@ -463,9 +464,65 @@ static int64_t sys_fork_impl(struct interrupt_frame *frame) {
  * the same vnode->data/size access pattern as elf.c/blkfs.c), and hands
  * it to process_exec(). Never returns on success -- return_to_kernel()
  * abandons the old program's execution entirely, same as exit(). */
-static int64_t sys_execve_impl(const char *path) {
+/* Absolute path of the calling task's cwd, built by fs/vfs.c's existing
+ * vfs_path() (the same thing the shell's `pwd` builtin prints). Needed
+ * because a task now inherits the directory it was launched from, so
+ * "where am I?" finally has an answer worth asking for. */
+static int64_t sys_getcwd_impl(char *buf, size_t size) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || size == 0 || !user_ptr_ok(buf, size)) {
+        return -1;
+    }
+    vfs_path(task->cwd, buf, size);
+    return 0;
+}
+
+/* argv lives in the calling task's address space, which process_exec()
+ * is about to replace -- so the strings have to be copied out first.
+ * Static rather than stack-allocated (2 KiB is a lot of kernel stack)
+ * and safe as such: nothing between the copy and process_exec()'s use of
+ * it re-enters the scheduler, so no second exec can be in flight. */
+#define EXEC_MAX_ARGS 16
+#define EXEC_MAX_ARG_LEN 128
+static char exec_argv_storage[EXEC_MAX_ARGS][EXEC_MAX_ARG_LEN];
+static const char *exec_argv[EXEC_MAX_ARGS];
+
+static int copy_user_argv(const char *const *user_argv) {
+    int n = 0;
+    if (user_argv == NULL) {
+        return 0;
+    }
+    while (n < EXEC_MAX_ARGS) {
+        if (!user_ptr_ok(&user_argv[n], sizeof(char *))) {
+            return -1;
+        }
+        const char *src = user_argv[n];
+        if (src == NULL) {
+            break;
+        }
+        if (!user_ptr_ok(src, 1)) {
+            return -1;
+        }
+        size_t i = 0;
+        while (i < EXEC_MAX_ARG_LEN - 1 && src[i] != '\0') {
+            exec_argv_storage[n][i] = src[i];
+            i++;
+        }
+        exec_argv_storage[n][i] = '\0';
+        exec_argv[n] = exec_argv_storage[n];
+        n++;
+    }
+    return n;
+}
+
+static int64_t sys_execve_impl(const char *path, const char *const *user_argv) {
     struct process *me = process_current();
     if (me == NULL || !user_ptr_ok(path, 1)) {
+        return -1;
+    }
+
+    int argc = copy_user_argv(user_argv);
+    if (argc < 0) {
         return -1;
     }
 
@@ -474,7 +531,7 @@ static int64_t sys_execve_impl(const char *path) {
         return -1;
     }
 
-    if (process_exec(me, node->data, node->size) != 0) {
+    if (process_exec(me, node->data, node->size, argc, exec_argv) != 0) {
         return -1;
     }
     return_to_kernel(0);
@@ -546,8 +603,11 @@ void syscall_dispatch(struct interrupt_frame *frame) {
         case SYS_fork:
             result = sys_fork_impl(frame);
             break;
+        case SYS_getcwd:
+            result = sys_getcwd_impl((char *)frame->rdi, (size_t)frame->rsi);
+            break;
         case SYS_execve:
-            result = sys_execve_impl((const char *)frame->rdi);
+            result = sys_execve_impl((const char *)frame->rdi, (const char *const *)frame->rsi);
             break; /* only reached on failure -- success never returns */
         case SYS_wait4:
             result = sys_wait_impl((int)frame->rdi, (int *)frame->rsi);

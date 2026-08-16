@@ -14,9 +14,10 @@ long lseek(int fd, long offset, int whence);
 int chdir(const char *path);
 int mkdir(const char *path);
 int fork(void);
-int execve(const char *path);
+int execve(const char *path, char *const argv[]);
 int waitpid(int pid, int *status);
 int getpid(void);
+int getcwd(char *buf, unsigned long size);
 long ioctl(int fd, unsigned long request, void *argp);
 
 #define O_RDONLY 0

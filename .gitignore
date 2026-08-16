@@ -17,3 +17,6 @@ userland/*.elf
 
 # Agents config
 .claude/
+
+# MacOs
+.DS_Store

@@ -456,19 +456,84 @@ static void cmd_sync(const char *args) {
     }
 }
 
+/* Splits `args` into an argv, in place of a real tokenizer: whitespace
+ * separated, no quoting or escaping. Static storage rather than stack
+ * because 16x128 bytes is a lot to put on the kernel stack, and only one
+ * command is ever being parsed at a time. */
+#define RUN_MAX_ARGS 16
+#define RUN_MAX_ARG_LEN 128
+static char run_argv_storage[RUN_MAX_ARGS][RUN_MAX_ARG_LEN];
+static const char *run_argv[RUN_MAX_ARGS];
+
+static int split_args(const char *args) {
+    int argc = 0;
+    size_t i = 0;
+    while (args[i] != '\0' && argc < RUN_MAX_ARGS) {
+        while (args[i] == ' ' || args[i] == '\t') {
+            i++;
+        }
+        if (args[i] == '\0') {
+            break;
+        }
+        size_t n = 0;
+        while (args[i] != '\0' && args[i] != ' ' && args[i] != '\t' && n < RUN_MAX_ARG_LEN - 1) {
+            run_argv_storage[argc][n++] = args[i++];
+        }
+        run_argv_storage[argc][n] = '\0';
+        run_argv[argc] = run_argv_storage[argc];
+        argc++;
+        while (args[i] != '\0' && args[i] != ' ' && args[i] != '\t') {
+            i++; /* Drop the tail of an over-long argument. */
+        }
+    }
+    return argc;
+}
+
+/* Resolves a program name the way a shell with a $PATH does: a name
+ * containing '/' is taken as a path (relative to cwd or absolute), and a
+ * bare name is looked up in cwd first, then in /bin. One search
+ * directory, hardcoded -- there's no environment to hold a real PATH. */
+static struct vnode *resolve_program(const char *name) {
+    struct vnode *node = vfs_resolve(cwd, name);
+    if (node != NULL && node->type == VNODE_FILE) {
+        return node;
+    }
+
+    for (const char *p = name; *p != '\0'; p++) {
+        if (*p == '/') {
+            return NULL; /* An explicit path that didn't resolve. */
+        }
+    }
+
+    struct vnode *bin = vfs_resolve(vfs_root(), "/bin");
+    if (bin == NULL || bin->type != VNODE_DIR) {
+        return NULL;
+    }
+    node = vfs_resolve(bin, name);
+    return (node != NULL && node->type == VNODE_FILE) ? node : NULL;
+}
+
 static void cmd_run(const char *args) {
     if (args[0] == '\0') {
-        kprintf("usage: run <path>\n");
+        kprintf("usage: run <path> [args...]\n");
         return;
     }
 
-    struct vnode *node = vfs_resolve(cwd, args);
-    if (node == NULL || node->type != VNODE_FILE) {
-        kprintf("run: %s: no such file\n", args);
+    int argc = split_args(args);
+    if (argc == 0) {
+        kprintf("usage: run <path> [args...]\n");
         return;
     }
 
-    if (process_spawn(node->data, node->size, KERNEL_PARENT_PID) < 0) {
+    struct vnode *node = resolve_program(run_argv[0]);
+    if (node == NULL) {
+        kprintf("run: %s: no such program\n", run_argv[0]);
+        return;
+    }
+
+    /* The task starts in the shell's own directory, so a relative
+     * argument like "." means what it looks like it means. */
+    if (process_spawn(node->data, node->size, argc, run_argv, cwd, KERNEL_PARENT_PID) < 0) {
         return;
     }
 
@@ -506,6 +571,26 @@ void shell_run(void) {
                 found = 1;
                 break;
             }
+        }
+        /* Not a builtin: fall through to running it as a program, so
+         * `scarf .` works like any shell rather than needing `run
+         * scarf .`. Builtins deliberately win a name collision -- a file
+         * dropped in /bin must never be able to shadow `ls` or `cd`. */
+        if (!found && resolve_program(cmd) != NULL) {
+            char invocation[LINE_MAX];
+            size_t n = 0;
+            for (const char *p = cmd; *p != '\0' && n < sizeof(invocation) - 2; p++) {
+                invocation[n++] = *p;
+            }
+            if (args[0] != '\0' && n < sizeof(invocation) - 2) {
+                invocation[n++] = ' ';
+                for (const char *p = args; *p != '\0' && n < sizeof(invocation) - 1; p++) {
+                    invocation[n++] = *p;
+                }
+            }
+            invocation[n] = '\0';
+            cmd_run(invocation);
+            found = 1;
         }
         if (!found) {
             kprintf("unknown command: %s (try 'help')\n", cmd);
