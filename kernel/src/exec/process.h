@@ -81,6 +81,14 @@ int process_fork(struct process *parent, struct interrupt_frame *frame);
 int process_exec(struct process *p, const uint8_t *image, size_t image_size, int argc,
                  const char *const *argv);
 
+/* Closes `p`'s pipe-backed stdin/stdout (M19, exec/pipe.h), if any --
+ * called from both places a process becomes PROC_ZOMBIE (exec/syscall.c's
+ * SYS_exit, and idt.c's non-fatal user-fault path) so a pane's shell
+ * exiting or crashing promptly shows up as EOF to whoever's reading its
+ * output pipe, rather than that pipe just silently never producing
+ * anything more. */
+void process_close_stdio_pipes(struct process *p);
+
 struct process *process_by_pid(int pid);
 
 /* Finds a process that's `parent_pid`'s child, matching `pid` exactly if

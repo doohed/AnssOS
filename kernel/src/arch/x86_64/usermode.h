@@ -2,6 +2,7 @@
 #define ARCH_X86_64_USERMODE_H
 
 #include "../../drivers/tty.h"
+#include "../../exec/pipe.h"
 #include "../../fs/vfs.h"
 #include "../../mm/vmm.h"
 
@@ -11,11 +12,16 @@
 #define MAX_OPEN_FILES 8
 
 /* One of a task's open (non-stdio) file descriptors -- fd = 3 + index
- * into usertask.open_files[]. `vnode == NULL` marks a free slot. */
+ * into usertask.open_files[]. A slot is free when *both* `vnode` and
+ * `pipe` are NULL. `pipe`/`pipe_write_end` back a pipe() end (see
+ * exec/pipe.h) instead of a vnode -- the two are mutually exclusive on
+ * any given slot. */
 struct open_file {
     struct vnode *vnode;
     size_t offset;
     int writable;
+    struct pipe *pipe;
+    int pipe_write_end;
 };
 
 /* Everything needed to run one program in ring 3: its entry point, its
@@ -35,6 +41,16 @@ struct usertask {
     uint64_t heap_end;
     struct open_file open_files[MAX_OPEN_FILES];
     struct vnode *cwd;
+
+    /* When set (by use_as_stdio(), see exec/syscall.c), fd 0/1/2 read/
+     * write these pipes instead of the physical console -- NULL for
+     * every task that never called use_as_stdio(), which is every
+     * program that existed before M19, so this changes nothing for
+     * them. Preserved across exec() (exec/process.c's process_exec())
+     * the same way open_files/cwd/termios already are; a plain fork()
+     * shallow-copies them for free like every other field here. */
+    struct pipe *stdin_pipe;
+    struct pipe *stdout_pipe;
 
     /* This task's console terminal mode (see drivers/tty.h) -- defaults
      * set by exec/elf.c's elf_load() to today's actual behavior

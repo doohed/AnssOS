@@ -20,6 +20,15 @@ int getpid(void);
 int getcwd(char *buf, unsigned long size);
 long ioctl(int fd, unsigned long request, void *argp);
 
+/* pipefd[0] = read end, pipefd[1] = write end -- real Linux pipe()'s
+ * exact signature (see kernel/src/exec/syscall.c). use_as_stdio() has no
+ * Linux equivalent (AnssOS-native, 900+ range): points this task's own
+ * fd 0/1 at the pipes behind stdin_fd/stdout_fd, freeing those two fds
+ * in the process (a move, not a dup) -- meant to be called by a freshly
+ * fork()'d child right before execve(), see userland/sh.c. */
+int pipe(int pipefd[2]);
+int use_as_stdio(int stdin_fd, int stdout_fd);
+
 /* AnssOS-native syscalls (900+, no Linux equivalent -- see
  * kernel/src/exec/syscall.c). audio_open() configures the single
  * playback stream (rate_hz must be 44100 or 48000, channels 1 or 2);

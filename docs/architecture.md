@@ -66,6 +66,16 @@ what went wrong building it; this is the shape of the result.
   `pmm_alloc_pages()` run, mapped `PAGE_USER`, file bytes copied in and
   the remainder zeroed for bss. It also builds the System V process
   initialization stack -- see [syscalls.md](syscalls.md#the-initial-stack).
+- **Pipes (M19):** `exec/pipe.c` is a small fixed-size ring buffer, not
+  vnode-based -- a pipe has no tree identity and needs ref-counted
+  open/closed state. Every operation is non-blocking by design: a
+  busy-spin inside a syscall handler can't yield the CPU to the *other*
+  process that would need to run to produce the data being waited for,
+  since preemption (above) only fires on a ring-3 interruption, never
+  ring-0. `pipe()` + the narrower `use_as_stdio()` (not general
+  `dup2()`) are what let `userland/tile.c` run independent `sh`
+  processes in tiled panes -- see [syscalls.md](syscalls.md#pipes-m19)
+  and [tile.md](tile.md).
 
 ## Syscalls
 

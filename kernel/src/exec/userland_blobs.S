@@ -88,4 +88,22 @@ testtone_wav_start:
 .incbin "src/exec/testtone.wav.bin"
 testtone_wav_end:
 
+.global pipetest_elf_start
+.global pipetest_elf_end
+pipetest_elf_start:
+.incbin "src/exec/pipetest.elf.bin"
+pipetest_elf_end:
+
+.global sh_elf_start
+.global sh_elf_end
+sh_elf_start:
+.incbin "src/exec/sh.elf.bin"
+sh_elf_end:
+
+.global tile_elf_start
+.global tile_elf_end
+tile_elf_start:
+.incbin "src/exec/tile.elf.bin"
+tile_elf_end:
+
 .section .note.GNU-stack,"",@progbits

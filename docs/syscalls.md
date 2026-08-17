@@ -28,6 +28,7 @@ termios` has Linux's layout, and so on.
 | 59 | `execve` | `execve(path, argv)` | replaces the image in place; same pid, open files, cwd, termios |
 | 60 | `exit` | `exit(status)` | |
 | 61 | `wait4` | `waitpid(pid, status)` | simplified: no options, no `WNOHANG` |
+| 22 | `pipe` | `pipe(pipefd[2])` | `pipefd[0]`=read end, `pipefd[1]`=write end; both never block (see below) |
 | 79 | `getcwd` | `getcwd(buf, size)` | absolute path of the task's cwd |
 | 80 | `chdir` | `chdir(path)` | also the only reliable "is this a directory?" test |
 | 83 | `mkdir` | `mkdir(path)` | |
@@ -50,6 +51,7 @@ not-a-real-syscall:
 | 901 | `audio_write` | `audio_write(buf, len)` | S16LE PCM; blocks until the device has consumed it |
 | 902 | `audio_close` | `audio_close()` | |
 | 903 | `poll_key` | `poll_key()` | non-blocking; -1 if no key is ready |
+| 904 | `use_as_stdio` | `use_as_stdio(stdin_fd, stdout_fd)` | points this task's fd 0/1 at the pipes behind two existing fds |
 
 `poll_key` is what makes an interactive audio player possible without
 threads or `poll`/`select`: it's the exact same non-blocking
@@ -57,6 +59,49 @@ threads or `poll`/`select`: it's the exact same non-blocking
 `read_line()` already polls with, exposed as a syscall so a playback
 loop can check for a control key without ever blocking the loop that
 feeds the audio device — see [play.md](play.md).
+
+`use_as_stdio` is the redirection half of running an independent
+process in a `tile.c` pane (M19-M21, see [tile.md](tile.md)): real Unix
+composes this from two `dup2()` calls, but this project deliberately
+doesn't implement general `dup2()` — the only real need is "make my
+stdio these two pipes," called by a freshly `fork()`'d child right
+before `execve()`, which is narrower surface than arbitrary fd→fd
+redirection. It's a *move*, not a dup: the two source fds are freed as
+part of the call, so there's still exactly one live reference to each
+pipe end afterward.
+
+## Pipes (M19)
+
+`pipe()` creates a `struct pipe` (`kernel/src/exec/pipe.h`) — a small,
+fixed-size (4096 byte) in-kernel ring buffer, deliberately unrelated to
+`struct vnode`: a pipe has no tree identity and needs bounded,
+ref-counted open/closed state a vnode's whole-buffer-regrow write model
+doesn't fit.
+
+**Every pipe operation is non-blocking**, full stop — `read()` returns
+`>0` (bytes), `0` (empty but a writer's still connected), or `-1` (EOF,
+every write-end reference gone); `write()` copies as much as fits and
+returns a short count rather than blocking on a full buffer. This isn't
+a simplification of convenience: `irq_handler()`'s preemption check
+(`arch/x86_64/idt.c`) only fires when the timer interrupts *ring-3*
+code, never ring-0, so a busy-spin inside a syscall handler waiting on
+*another process* to produce data would never yield the CPU to that
+process — a real deadlock, not a style choice. A program that wants
+blocking-looking behavior over a pipe loops in its own ring-3 code
+instead (see `userland/sh.c`'s `read_line()`), the same shape
+`poll_key()`-based loops already use elsewhere.
+
+References are counted, not tracked as a single "open" boolean — `fork()`
+shallow-copies the *entire* `open_files[]` table (same as every other
+fd), so after a `fork()` both parent and child hold independent table
+entries referencing the same pipe, and closing one's copy must not
+silently close the other's. `process_fork()` bumps the relevant
+refcount for every pipe-backed entry it copies to keep this correct.
+There's no `O_CLOEXEC`/close-on-exec either — a child that inherits fds
+it doesn't know about (e.g. `tile.c` spawning a *second* pane while the
+first one's pipes are still open) must close them explicitly, or it
+silently holds a phantom reference that keeps the first pipe from ever
+reaching zero refs. Found exactly this way, as a real hang.
 
 ## The initial stack
 
@@ -105,8 +150,10 @@ kernel knows.
 
 ## Not implemented
 
-No `mmap`, no signals, no `poll`/`select`, no `pipe`, no `dup`/`dup2`,
-no pty, no `O_NONBLOCK`, no `stat`/`fstat`, no `unlink`/`rename`, no
-`envp`, no TLS or `arch_prctl`. That list is why a real terminal
-multiplexer, a shell running as a userland process, and a musl port are
-all still out of reach -- see [roadmap.md](roadmap.md).
+No `mmap`, no signals, no `poll`/`select`, no general `dup`/`dup2` (M19
+added `pipe()` and the narrower `use_as_stdio()` instead -- see above),
+no pty, no `O_NONBLOCK` on anything but pipes (which are unconditionally
+non-blocking), no `stat`/`fstat`, no `unlink`/`rename`, no `envp`, no TLS
+or `arch_prctl`. A real terminal multiplexer and a userland shell turned
+out *not* to need most of that list after all -- see
+[tile.md](tile.md) -- but a musl port still does.

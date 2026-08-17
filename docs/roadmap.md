@@ -486,6 +486,80 @@ virtio-gpu queue.
       not -- the audio equivalent of M5's pixel-swatch screendump
       check. See [play.md](play.md).
 
+- [x] **M19 -- pipes.** The user wanted real tiling terminals --
+      independent processes side by side, not `scarf`'s reverted
+      split-views-of-one-process approach. That needed a way to
+      redirect a child's stdin/stdout away from the physical console,
+      which didn't exist: `sys_write_impl`/`sys_read_impl` hardcoded fd
+      0/1/2 straight to the keyboard/screen, bypassing the per-task file
+      table entirely. New `kernel/src/exec/pipe.c/.h`: a small
+      fixed-size ring buffer, deliberately **not** vnode-based (a pipe
+      has no tree identity, and needs ref-counted open/closed state a
+      vnode's whole-buffer-regrow write model doesn't fit) and
+      deliberately **non-blocking on every operation, no exceptions** --
+      `irq_handler()`'s preemption check (`arch/x86_64/idt.c`) only
+      fires when the timer interrupts ring-3 code, never ring-0, so a
+      busy-spin inside a syscall handler waiting on *another process* to
+      produce data would never yield the CPU to that process. A real
+      deadlock, not a style choice -- confirmed by reading `idt.c`
+      directly before writing a line of the rest of this. Two new
+      syscalls: `pipe()` (Linux's real syscall 22, real signature) and
+      `use_as_stdio()` (AnssOS-native, 904 -- narrower than general
+      `dup2()`, which this project deliberately doesn't implement, since
+      "make my stdio these two pipes before exec()" is the only actual
+      need). See [syscalls.md](syscalls.md#pipes-m19).
+      **Two real bugs, both found by testing:** a plain "is this end
+      open" boolean broke the moment `fork()`'s existing whole-table
+      shallow copy gave two processes independent references to the
+      same pipe -- one process's `close()` of its own copy closed the
+      *shared* object's end out from under the other, caught by a
+      self-test (`pipetest.bin`) silently capturing zero bytes from an
+      `exec()`'d child. Fixed with real reference counts,
+      `process_fork()` bumping them for every pipe-backed entry it
+      copies. See [tile.md](tile.md#two-real-bugs-both-found-by-testing-not-review)
+      for the second one (no close-on-exec), found one milestone later
+      as a genuine hang.
+
+- [x] **M20 -- `sh`, a userland shell.** `kernel/src/shell/shell.c` is
+      kernel-resident -- nothing to `exec()` into a pane. New
+      `userland/sh.c` ports a deliberately narrow subset of it (`cd`,
+      `pwd`, `ls`, `cat`, `write`, `create`, `echo`, `clear`, `help`,
+      running programs via the same `fork()`/`execve()`/`waitpid()`
+      composition `forktest.c` already proved) rewritten against
+      syscalls instead of kernel-internal `vfs_*` calls -- `delete`/
+      `copy`/`move`/`sync` and every kernel-debug builtin are explicitly
+      out, needing syscalls (`unlink`/`rename`/an explicit sync) that
+      don't exist. Its `read_line()` reads one byte at a time in a loop
+      that treats a `0` return as "no data yet" -- identical whether fd
+      0 is the real console (never actually returns 0, blocks
+      internally) or a pipe (does, by M19's design) -- one code path,
+      not two. See [tile.md](tile.md).
+
+- [x] **M21 -- `tile`, a fixed-grid multiplexer.** New `userland/tile.c`:
+      spawns N `sh` panes (`pipe()` x2, `fork()`, child closes what it
+      doesn't need and `use_as_stdio()`s the rest before `execve()`,
+      same pattern M19's own design settled on), tiled in a fixed 1/2/2x2
+      grid -- not `scarf`'s reverted dynamic tree. Each pane's virtual
+      terminal is scrollback-only, no ANSI parsing, since `sh` never
+      emits cursor-addressing escapes -- running `scarf`/`play` as a
+      pane is explicit future work, needing a real per-pane ANSI
+      interpreter. `Ctrl-b` prefixes pane-switch/quit commands, tmux's
+      own convention. **The second real bug this session found by
+      testing, not review:** spawning a *second* pane's child inherits
+      the *first* pane's pipes too (the same whole-table `fork()` copy
+      M19 already had to account for once), and since it never
+      references them by name it never closes them -- a phantom
+      reference that kept the first pipe's refcount from ever reaching
+      zero. Surfaced as a genuine hang (`Ctrl-b q` closing pane 1's
+      stdin and waiting forever in `waitpid()`), diagnosed with
+      temporary `kprintf` tracing in the kernel (serial output is
+      unaffected by whatever's piped where, unlike the userland debug
+      prints tried first, which vanished into an unread pipe). Fixed by
+      having each new pane's child explicitly close every earlier
+      pane's fds first -- real Unix has this exact problem, which is
+      what close-on-exec exists to solve, and this project doesn't have
+      it. See [tile.md](tile.md).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
@@ -502,5 +576,11 @@ written and intentionally small, proving the pattern rather than being
 generally reusable yet — FPU/SSE context-switch support (`XSAVE`/
 `FXSAVE` per-task; both the kernel and userland build with `-mno-sse
 -mno-80387` today), and therefore real MP3 decoding (M17/M18 play WAV/
-PCM instead — see [play.md](play.md#why-wav-not-mp3)). These are
-natural next milestones from here.
+PCM instead — see [play.md](play.md#why-wav-not-mp3)); general `dup2()`
+and close-on-exec (M19-M21 use a narrower `use_as_stdio()` instead, and
+`tile.c`'s spawn logic closes inherited fds by hand — see
+[tile.md](tile.md#two-real-bugs-both-found-by-testing-not-review)); and
+a per-pane ANSI virtual terminal for `tile.c`, needed before `scarf`/
+`play` could run as panes (M21 only supports `sh`, which never emits
+cursor-addressing escapes). These are natural next milestones from
+here.

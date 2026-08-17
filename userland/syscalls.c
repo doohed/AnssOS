@@ -99,3 +99,11 @@ int audio_close(void) {
 int poll_key(void) {
     return (int)syscall3(903, 0, 0, 0);
 }
+
+int pipe(int pipefd[2]) {
+    return (int)syscall3(22, (long)(unsigned long)pipefd, 0, 0);
+}
+
+int use_as_stdio(int stdin_fd, int stdout_fd) {
+    return (int)syscall3(904, stdin_fd, stdout_fd, 0);
+}

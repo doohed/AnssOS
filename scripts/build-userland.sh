@@ -56,10 +56,13 @@ build_program termtest termtest.c
 build_program readdirtest readdirtest.c
 build_program scarf scarf.c
 build_program play play.c
+build_program pipetest pipetest.c
+build_program sh sh.c
+build_program tile tile.c
 
 # Not a userland ELF -- a synthesized WAV fixture for `play` (see the
 # script itself for why), dropped at the same src/exec/*.bin location
 # userland_blobs.S expects.
 python3 "$(dirname "$0")/gen-test-tone.py"
 
-echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest,scarf,play}.elf"
+echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest,scarf,play,pipetest,sh,tile}.elf"

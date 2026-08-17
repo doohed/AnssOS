@@ -250,6 +250,13 @@ void kmain(void) {
                         (size_t)(termtest_elf_end - termtest_elf_start));
         vfs_write_bytes(bin, "readdirtest", readdirtest_elf_start,
                         (size_t)(readdirtest_elf_end - readdirtest_elf_start));
+        vfs_write_bytes(bin, "pipetest", pipetest_elf_start,
+                        (size_t)(pipetest_elf_end - pipetest_elf_start));
+        /* Not a self-test fixture -- sh.bin is a real tool (`run sh`, or
+         * spawned as a tile.c pane), embedded the same way scarf/play
+         * are. */
+        vfs_write_bytes(bin, "sh", sh_elf_start, (size_t)(sh_elf_end - sh_elf_start));
+        vfs_write_bytes(bin, "tile", tile_elf_start, (size_t)(tile_elf_end - tile_elf_start));
         /* Not a self-test fixture like the rest -- scarf.bin is an actual
          * tool (`run scarf.bin`), embedded the same way for the same
          * reason: there's no host-side way to get a file onto the VFS. */

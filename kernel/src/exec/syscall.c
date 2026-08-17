@@ -11,6 +11,7 @@
 #include "../mm/heap.h"
 #include "../mm/pmm.h"
 #include "../mm/vmm.h"
+#include "pipe.h"
 #include "process.h"
 
 #include <stddef.h>
@@ -36,6 +37,7 @@
 #define SYS_exit 60
 #define SYS_getdents 217
 #define SYS_getcwd 79
+#define SYS_pipe 22
 
 /* AnssOS-native syscalls, 900+ -- unlike everything above, these have no
  * real Linux equivalent (Linux does audio via /dev/snd + ioctl, and
@@ -46,6 +48,12 @@
 #define SYS_audio_write 901
 #define SYS_audio_close 902
 #define SYS_poll_key 903
+/* use_as_stdio() has no Linux equivalent either -- real Unix composes
+ * this from two dup2() calls, but this project deliberately doesn't
+ * implement general dup2() (more surface than the actual need: only
+ * ever "make my stdio these two pipes," never arbitrary fd->fd
+ * redirection), so it's AnssOS-native too -- see M19's plan doc. */
+#define SYS_use_as_stdio 904
 
 /* ioctl() requests this project actually understands -- Linux's real
  * TCGETS/TCSETS values, so a program built the standard way (get
@@ -89,14 +97,30 @@ static int user_ptr_ok(const void *ptr, size_t len) {
 
 /* Real (non-stdio) file descriptors are `3 + index` into the current
  * task's open_files[] -- returns the slot, or NULL if `fd` isn't a
- * currently-open one. */
+ * currently-open one. A slot backs either a vnode or a pipe end (M19),
+ * never both -- checking just one here would report a pipe-only slot as
+ * "not open". */
 static struct open_file *open_file_for(int fd) {
     struct usertask *task = usermode_current_task();
     int idx = fd - 3;
-    if (task == NULL || idx < 0 || idx >= MAX_OPEN_FILES || task->open_files[idx].vnode == NULL) {
+    if (task == NULL || idx < 0 || idx >= MAX_OPEN_FILES ||
+        (task->open_files[idx].vnode == NULL && task->open_files[idx].pipe == NULL)) {
         return NULL;
     }
     return &task->open_files[idx];
+}
+
+/* Finds a free open_files[] slot (both vnode and pipe NULL) without
+ * claiming it -- shared by sys_open_impl() and sys_pipe_impl(), the
+ * latter needing two slots allocated atomically (see its own comment).
+ * Returns the index, or -1 if the table is full. */
+static int find_free_slot(struct usertask *task) {
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (task->open_files[i].vnode == NULL && task->open_files[i].pipe == NULL) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 static int64_t sys_open_impl(const char *path, int flags) {
@@ -135,21 +159,29 @@ static int64_t sys_open_impl(const char *path, int flags) {
         node->size = 0;
     }
 
-    for (int i = 0; i < MAX_OPEN_FILES; i++) {
-        if (task->open_files[i].vnode == NULL) {
-            task->open_files[i].vnode = node;
-            task->open_files[i].offset = 0;
-            task->open_files[i].writable = (access_mode == O_WRONLY);
-            return 3 + i;
-        }
+    int i = find_free_slot(task);
+    if (i < 0) {
+        return -1; /* too many open files */
     }
-    return -1; /* too many open files */
+    task->open_files[i].vnode = node;
+    task->open_files[i].offset = 0;
+    task->open_files[i].writable = (access_mode == O_WRONLY);
+    return 3 + i;
 }
 
 static int64_t sys_close_impl(int fd) {
     struct open_file *f = open_file_for(fd);
     if (f == NULL) {
         return -1;
+    }
+    if (f->pipe != NULL) {
+        if (f->pipe_write_end) {
+            pipe_close_write(f->pipe);
+        } else {
+            pipe_close_read(f->pipe);
+        }
+        f->pipe = NULL;
+        return 0;
     }
     f->vnode = NULL;
     return 0;
@@ -244,6 +276,15 @@ static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
         return -1;
     }
     if (fd == 1 || fd == 2) {
+        /* use_as_stdio() (M19, exec/pipe.h) redirects fd 1/2 to a pipe --
+         * checked before the hardcoded console path below, which every
+         * program that never called it (i.e. every program that existed
+         * before M19) still takes unchanged. */
+        struct usertask *task = usermode_current_task();
+        if (task != NULL && task->stdout_pipe != NULL) {
+            return pipe_write(task->stdout_pipe, buf, len);
+        }
+
         const char *bytes = buf;
         /* One write() from userland becomes exactly one virtio-gpu flush
          * rather than one per character. A full-screen redraw
@@ -260,7 +301,16 @@ static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
     }
 
     struct open_file *f = open_file_for(fd);
-    if (f == NULL || !f->writable) {
+    if (f == NULL) {
+        return -1;
+    }
+    if (f->pipe != NULL) {
+        if (!f->pipe_write_end) {
+            return -1;
+        }
+        return pipe_write(f->pipe, buf, len);
+    }
+    if (!f->writable) {
         return -1;
     }
     struct vnode *node = f->vnode;
@@ -320,7 +370,16 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
 
     if (fd != 0) {
         struct open_file *f = open_file_for(fd);
-        if (f == NULL || f->vnode->type != VNODE_FILE) {
+        if (f == NULL) {
+            return -1;
+        }
+        if (f->pipe != NULL) {
+            if (f->pipe_write_end) {
+                return -1;
+            }
+            return pipe_read(f->pipe, buf, len);
+        }
+        if (f->vnode->type != VNODE_FILE) {
             return -1;
         }
         struct vnode *node = f->vnode;
@@ -334,6 +393,18 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
     }
 
     struct usertask *task = usermode_current_task();
+
+    /* use_as_stdio() (M19) redirects fd 0 to a pipe -- non-blocking,
+     * unlike the hardware-polling path below: see exec/pipe.h's own
+     * comment on why pipes never block in a syscall handler (ring-0
+     * spins can't yield to the other process producing the data). A
+     * program that wants blocking-looking behavior over a pipe loops in
+     * its own ring-3 code instead (see userland/sh.c), the same shape
+     * play.c's poll_key() loop already uses. */
+    if (task != NULL && task->stdin_pipe != NULL) {
+        return pipe_read(task->stdin_pipe, buf, len);
+    }
+
     int raw = task != NULL && !(task->termios.c_lflag & ICANON);
     char *bytes = buf;
     size_t n = 0;
@@ -460,6 +531,78 @@ static int64_t sys_ioctl_impl(int fd, uint64_t request, void *argp) {
 static int64_t sys_getpid_impl(void) {
     struct process *p = process_current();
     return p != NULL ? p->pid : -1;
+}
+
+/* pipefd[0] = read end, pipefd[1] = write end -- real Linux pipe()'s
+ * exact convention (see M19's plan doc for why this one syscall reuses
+ * Linux's real number 22, unlike use_as_stdio() right below it). Both
+ * ends land in the *calling* task's open_files[], same as open(). */
+static int64_t sys_pipe_impl(int *pipefd) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || !user_ptr_ok(pipefd, 2 * sizeof(int))) {
+        return -1;
+    }
+
+    /* One pass, not two find_free_slot() calls -- calling it twice would
+     * need the first result "claimed" somehow before the second search,
+     * or both could return the same index. */
+    int read_idx = -1, write_idx = -1;
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        if (task->open_files[i].vnode == NULL && task->open_files[i].pipe == NULL) {
+            if (read_idx < 0) {
+                read_idx = i;
+            } else {
+                write_idx = i;
+                break;
+            }
+        }
+    }
+    if (read_idx < 0 || write_idx < 0) {
+        return -1;
+    }
+
+    struct pipe *p = pipe_create();
+    if (p == NULL) {
+        task->open_files[read_idx].pipe = NULL;
+        return -1;
+    }
+
+    task->open_files[read_idx].pipe = p;
+    task->open_files[read_idx].pipe_write_end = 0;
+    task->open_files[write_idx].pipe = p;
+    task->open_files[write_idx].pipe_write_end = 1;
+
+    pipefd[0] = 3 + read_idx;
+    pipefd[1] = 3 + write_idx;
+    return 0;
+}
+
+/* Points this task's fd 0/1 at the pipes behind `stdin_fd`/`stdout_fd`
+ * and frees those two table slots -- a *move*, not a dup, so there's
+ * still exactly one live reference to each pipe end afterward (see
+ * exec/pipe.h: each end has exactly one owner in this design, no
+ * refcounting). Meant to be called by a freshly fork()'d child, right
+ * before execve() -- see M19's plan doc for the full usage pattern. No
+ * Linux equivalent (real Unix composes this from two dup2() calls); a
+ * general dup2() would be more surface than this project actually
+ * needs. */
+static int64_t sys_use_as_stdio_impl(int stdin_fd, int stdout_fd) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL) {
+        return -1;
+    }
+    struct open_file *in = open_file_for(stdin_fd);
+    struct open_file *out = open_file_for(stdout_fd);
+    if (in == NULL || in->pipe == NULL || in->pipe_write_end || out == NULL ||
+        out->pipe == NULL || !out->pipe_write_end) {
+        return -1;
+    }
+
+    task->stdin_pipe = in->pipe;
+    task->stdout_pipe = out->pipe;
+    in->pipe = NULL;
+    out->pipe = NULL;
+    return 0;
 }
 
 static int64_t sys_audio_open_impl(uint32_t rate_hz, uint32_t channels) {
@@ -636,6 +779,12 @@ void syscall_dispatch(struct interrupt_frame *frame) {
         case SYS_getpid:
             result = sys_getpid_impl();
             break;
+        case SYS_pipe:
+            result = sys_pipe_impl((int *)frame->rdi);
+            break;
+        case SYS_use_as_stdio:
+            result = sys_use_as_stdio_impl((int)frame->rdi, (int)frame->rsi);
+            break;
         case SYS_audio_open:
             result = sys_audio_open_impl((uint32_t)frame->rdi, (uint32_t)frame->rsi);
             break;
@@ -665,6 +814,7 @@ void syscall_dispatch(struct interrupt_frame *frame) {
             int code = (int)frame->rdi;
             kprintf("\nprocess %d exited with code %d\n", me != NULL ? me->pid : -1, code);
             if (me != NULL) {
+                process_close_stdio_pipes(me);
                 me->state = PROC_ZOMBIE;
                 me->exit_status = code;
             }

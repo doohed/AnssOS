@@ -30,5 +30,11 @@ extern const unsigned char play_elf_start[];
 extern const unsigned char play_elf_end[];
 extern const unsigned char testtone_wav_start[];
 extern const unsigned char testtone_wav_end[];
+extern const unsigned char pipetest_elf_start[];
+extern const unsigned char pipetest_elf_end[];
+extern const unsigned char sh_elf_start[];
+extern const unsigned char sh_elf_end[];
+extern const unsigned char tile_elf_start[];
+extern const unsigned char tile_elf_end[];
 
 #endif

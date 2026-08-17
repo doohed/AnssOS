@@ -95,6 +95,20 @@ int process_spawn(const uint8_t *image, size_t image_size, int argc, const char 
     return p->pid;
 }
 
+void process_close_stdio_pipes(struct process *p) {
+    if (p == NULL) {
+        return;
+    }
+    if (p->task.stdin_pipe != NULL) {
+        pipe_close_read(p->task.stdin_pipe);
+        p->task.stdin_pipe = NULL;
+    }
+    if (p->task.stdout_pipe != NULL) {
+        pipe_close_write(p->task.stdout_pipe);
+        p->task.stdout_pipe = NULL;
+    }
+}
+
 int process_fork(struct process *parent, struct interrupt_frame *frame) {
     struct process *child = alloc_slot();
     if (child == NULL) {
@@ -107,6 +121,32 @@ int process_fork(struct process *parent, struct interrupt_frame *frame) {
      * gives, a deliberate simplification); `as` gets replaced below with
      * a real clone, not the parent's own. */
     child->task = parent->task;
+
+    /* Pipes (M19) are the one place that shallow copy needs a second
+     * step: unlike a vnode, a pipe's open/closed state is real shared
+     * kernel state (see exec/pipe.h's own comment on read_refs/
+     * write_refs) -- every pipe-backed entry the child just inherited a
+     * copy of is a genuinely new independent reference, and needs its
+     * pipe's refcount bumped to match, or that pipe will think it has
+     * fewer live references than it really does the moment either
+     * process closes its copy. */
+    for (int i = 0; i < MAX_OPEN_FILES; i++) {
+        struct pipe *p = child->task.open_files[i].pipe;
+        if (p == NULL) {
+            continue;
+        }
+        if (child->task.open_files[i].pipe_write_end) {
+            p->write_refs++;
+        } else {
+            p->read_refs++;
+        }
+    }
+    if (child->task.stdin_pipe != NULL) {
+        child->task.stdin_pipe->read_refs++;
+    }
+    if (child->task.stdout_pipe != NULL) {
+        child->task.stdout_pipe->write_refs++;
+    }
 
     child->task.as = vmm_new_address_space();
     if (vmm_clone_user_pages(&child->task.as, &parent->task.as) != 0) {
@@ -150,6 +190,12 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size, int
     /* Terminal settings belong to the terminal, not the program running
      * on it -- real Unix exec() doesn't reset them either. */
     struct k_termios saved_termios = p->task.termios;
+    /* M19: a pane's pipe-backed stdio (use_as_stdio(), exec/pipe.h) must
+     * survive its own execve() into the real pane program -- without
+     * this it would lose its pipe-backed fd 0/1 the instant it execs,
+     * same reasoning as open_files/cwd right above/below. */
+    struct pipe *saved_stdin_pipe = p->task.stdin_pipe;
+    struct pipe *saved_stdout_pipe = p->task.stdout_pipe;
     /* p->task.kernel_resume is *live* right now -- it's what the
      * return_to_kernel() call the caller (sys_execve_impl) makes right
      * after this returns will read from, to correctly unwind back to
@@ -178,6 +224,8 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size, int
     memcpy(p->task.open_files, saved_files, sizeof(saved_files));
     p->task.cwd = saved_cwd;
     p->task.termios = saved_termios;
+    p->task.stdin_pipe = saved_stdin_pipe;
+    p->task.stdout_pipe = saved_stdout_pipe;
     memcpy(p->task.kernel_resume, saved_kernel_resume, sizeof(saved_kernel_resume));
     p->has_run = 0;           /* Next dispatch is a fresh launch at the new entry. */
     p->state = PROC_RUNNABLE; /* Was PROC_RUNNING; the caller is about to abandon this

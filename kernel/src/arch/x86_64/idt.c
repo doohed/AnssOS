@@ -106,6 +106,7 @@ void isr_handler(struct interrupt_frame *frame) {
                 exception_name(frame->vector), frame->vector, frame->error_code, frame->rip);
         struct process *me = process_current();
         if (me != NULL) {
+            process_close_stdio_pipes(me);
             me->state = PROC_ZOMBIE;
             me->exit_status = -1;
         }
