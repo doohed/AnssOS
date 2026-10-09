@@ -10,6 +10,16 @@ binary struct packing and float math bash doesn't have):
 sudo apt-get install -y nasm qemu-system-x86 qemu-utils ovmf xorriso mtools python3
 ```
 
+`play` is Rust (the `userland/rust/` workspace, see
+[play.md](play.md#design-notes)), so the build also needs
+a Rust toolchain from [rustup](https://rustup.rs) plus the bare-metal
+x86_64 target. The first build downloads its crates (ratatui and its
+dependencies) from crates.io:
+
+```sh
+rustup target add x86_64-unknown-none
+```
+
 Building and running are two separate scripts (`make`/`make run` are thin
 wrappers around them, if you'd rather not call them directly):
 

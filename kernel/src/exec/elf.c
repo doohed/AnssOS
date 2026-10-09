@@ -49,7 +49,7 @@ struct __attribute__((packed)) elf64_phdr {
  * reasonably-linked non-PIE binary's own segments (those typically start
  * around 0x400000). */
 #define USER_STACK_TOP 0x0000700000000000ull
-/* 64 KiB: minimp3's mp3dec_decode_frame() alone (userland/play.c) puts a
+/* 64 KiB: minimp3's mp3dec_decode_frame() alone (userland/rust/play/) puts a
  * ~16 KiB scratch struct on the stack -- the old 16 KiB overflowed. */
 #define USER_STACK_PAGES 16
 

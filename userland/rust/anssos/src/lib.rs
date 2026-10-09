@@ -1,0 +1,235 @@
+//! The runtime every AnssOS Rust program links against. There is no Rust
+//! std for AnssOS, so this provides the few pieces a `no_std` program
+//! still needs:
+//!
+//! - safe wrappers over AnssOS's hand-written C libc (userland/libc.h),
+//!   the same syscall wrappers every C program links against -- nothing
+//!   here talks to the kernel directly;
+//! - the global allocator, on top of the libc's malloc();
+//! - the panic handler.
+//!
+//! A program just depends on this crate; registering the allocator and
+//! panic handler happens here, once. See ../Cargo.toml for how programs
+//! are built and linked.
+
+#![no_std]
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
+use core::fmt;
+
+pub const O_RDONLY: c_int = 0;
+pub const SEEK_SET: c_int = 0;
+pub const SEEK_CUR: c_int = 1;
+pub const SEEK_END: c_int = 2;
+
+const TIOCGWINSZ: c_ulong = 0x5413;
+const ICANON: c_uint = 0x0002;
+const ECHO: c_uint = 0x0008;
+const VMIN: usize = 6;
+const VTIME: usize = 5;
+const TCSANOW: c_int = 0;
+
+/// Linux's struct termios layout -- see kernel/src/drivers/tty.h.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Termios {
+    c_iflag: c_uint,
+    c_oflag: c_uint,
+    c_cflag: c_uint,
+    c_lflag: c_uint,
+    c_line: u8,
+    c_cc: [u8; 19],
+}
+
+#[repr(C)]
+struct Winsize {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
+
+unsafe extern "C" {
+    fn write(fd: c_int, buf: *const c_void, len: c_ulong) -> c_long;
+    fn read(fd: c_int, buf: *mut c_void, len: c_ulong) -> c_long;
+    fn open(path: *const c_char, flags: c_int) -> c_int;
+    fn close(fd: c_int) -> c_int;
+    fn lseek(fd: c_int, offset: c_long, whence: c_int) -> c_long;
+    fn ioctl(fd: c_int, request: c_ulong, argp: *mut c_void) -> c_long;
+    fn tcgetattr(fd: c_int, t: *mut Termios) -> c_int;
+    fn tcsetattr(fd: c_int, optional_actions: c_int, t: *const Termios) -> c_int;
+    fn audio_open(rate_hz: c_uint, channels: c_uint) -> c_int;
+    fn audio_write(buf: *const c_void, len: c_uint) -> c_long;
+    fn audio_close() -> c_int;
+    #[link_name = "poll_key"]
+    fn c_poll_key() -> c_int;
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+    #[link_name = "exit"]
+    fn c_exit(code: c_int) -> !;
+}
+
+pub fn write_all(fd: c_int, mut bytes: &[u8]) {
+    while !bytes.is_empty() {
+        let n = unsafe { write(fd, bytes.as_ptr().cast(), bytes.len() as c_ulong) };
+        if n <= 0 {
+            return;
+        }
+        bytes = &bytes[n as usize..];
+    }
+}
+
+pub fn exit(code: i32) -> ! {
+    unsafe { c_exit(code) }
+}
+
+/// Non-blocking keypress check: the key's byte, or None if none is ready.
+pub fn poll_key() -> Option<u8> {
+    let k = unsafe { c_poll_key() };
+    if k < 0 { None } else { Some(k as u8) }
+}
+
+/// Terminal size in (columns, rows), 80x24 if the ioctl fails.
+pub fn window_size() -> (u16, u16) {
+    let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    let ok = unsafe { ioctl(0, TIOCGWINSZ, (&raw mut ws).cast()) } == 0;
+    if ok && ws.ws_col > 0 && ws.ws_row > 0 { (ws.ws_col, ws.ws_row) } else { (80, 24) }
+}
+
+/// Puts the console in raw mode (no line buffering, no echo); restores
+/// the original settings when dropped.
+pub struct RawMode(Termios);
+
+impl RawMode {
+    pub fn enable() -> Option<RawMode> {
+        let mut orig = Termios { c_iflag: 0, c_oflag: 0, c_cflag: 0, c_lflag: 0, c_line: 0, c_cc: [0; 19] };
+        if unsafe { tcgetattr(0, &mut orig) } != 0 {
+            return None;
+        }
+        let mut raw = orig;
+        raw.c_lflag &= !(ICANON | ECHO);
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        if unsafe { tcsetattr(0, TCSANOW, &raw) } != 0 {
+            return None;
+        }
+        Some(RawMode(orig))
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        unsafe { tcsetattr(0, TCSANOW, &self.0) };
+    }
+}
+
+/// An open file descriptor, closed on drop.
+pub struct File(c_int);
+
+impl File {
+    /// `path` must be NUL-terminated (it comes straight from argv).
+    pub fn open(path: *const c_char) -> Option<File> {
+        let fd = unsafe { open(path, O_RDONLY) };
+        if fd < 0 { None } else { Some(File(fd)) }
+    }
+
+    /// Reads up to `buf.len()` bytes; 0 at end of file or on error.
+    pub fn read(&mut self, buf: &mut [u8]) -> usize {
+        let n = unsafe { read(self.0, buf.as_mut_ptr().cast(), buf.len() as c_ulong) };
+        if n <= 0 { 0 } else { n as usize }
+    }
+
+    /// Fills as much of `buf` as the file has left; returns the count.
+    pub fn read_full(&mut self, buf: &mut [u8]) -> usize {
+        let mut got = 0;
+        while got < buf.len() {
+            let n = self.read(&mut buf[got..]);
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+        got
+    }
+
+    pub fn seek(&mut self, offset: i64, whence: c_int) -> i64 {
+        unsafe { lseek(self.0, offset as c_long, whence) as i64 }
+    }
+}
+
+impl Drop for File {
+    fn drop(&mut self) {
+        unsafe { close(self.0) };
+    }
+}
+
+/// The single virtio-sound playback stream; closed on drop.
+pub struct Audio;
+
+impl Audio {
+    pub fn open(rate: u32, channels: u32) -> Option<Audio> {
+        if unsafe { audio_open(rate, channels) } == 0 { Some(Audio) } else { None }
+    }
+
+    /// Sends S16LE PCM, blocking until the device has consumed it.
+    pub fn write(&mut self, pcm: &[u8]) -> bool {
+        unsafe { audio_write(pcm.as_ptr().cast(), pcm.len() as c_uint) >= 0 }
+    }
+}
+
+impl Drop for Audio {
+    fn drop(&mut self) {
+        unsafe { audio_close() };
+    }
+}
+
+/// `core::fmt` sink straight to a file descriptor -- `write!` without
+/// allocating, which the panic handler relies on.
+pub struct FdWriter(pub c_int);
+
+impl fmt::Write for FdWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        write_all(self.0, s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Rust's global allocator, on top of the C libc's brk-backed malloc().
+/// That malloc only promises its own HEAP_ALIGN, so every allocation is
+/// over-sized by `align` bytes and the pointer malloc() really returned
+/// is stashed in the 8 bytes right below the aligned block, for dealloc.
+pub struct LibcAlloc;
+
+unsafe impl GlobalAlloc for LibcAlloc {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let align = layout.align().max(8);
+        let raw = unsafe { malloc(layout.size() + align + 8) } as usize;
+        if raw == 0 {
+            return core::ptr::null_mut();
+        }
+        let aligned = (raw + 8 + align - 1) & !(align - 1);
+        unsafe { *((aligned - 8) as *mut usize) = raw };
+        aligned as *mut u8
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        let raw = unsafe { *((ptr as usize - 8) as *const usize) };
+        unsafe { free(raw as *mut c_void) };
+    }
+}
+
+#[global_allocator]
+static ALLOC: LibcAlloc = LibcAlloc;
+
+/// Puts the console back in a usable state before reporting: plain
+/// attributes, cursor shown, on a fresh line -- a panic mid-frame in a
+/// full-screen program would otherwise leave reverse video on and the
+/// cursor hidden. The program's screen itself is left as it was.
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
+    write_all(1, b"\x1b[0m\x1b[?25h\r\n");
+    let _ = writeln!(FdWriter(1), "panic: {info}");
+    exit(101)
+}

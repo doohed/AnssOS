@@ -24,7 +24,7 @@ LD="${LD:-ld}"
 # each process's FPU registers around every dispatch (kernel/src/arch/
 # x86_64/fpu.h) -- needed by play's MP3 decoder. userland/include holds
 # the minimal <string.h>/<stdlib.h> shims vendored code like minimp3
-# expects, backed by this libc.
+# (userland/rust/play/vendor/) expects, backed by this libc.
 CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie
     -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv -mno-red-zone
     -I userland/include)
@@ -41,6 +41,10 @@ build_program() {
     shift
     local objs=()
     for src in "${LIBC_SRCS[@]}" "$@"; do
+        if [[ "$src" == *.a ]]; then
+            objs+=("userland/$src") # prebuilt archive, e.g. a Rust staticlib
+            continue
+        fi
         local obj="userland/${src%.*}.o"
         "$CC" "${CFLAGS[@]}" -c "userland/$src" -o "$obj"
         objs+=("$obj")
@@ -60,7 +64,18 @@ build_program preempttest preempttest.c
 build_program termtest termtest.c
 build_program readdirtest readdirtest.c
 build_program scarf scarf.c
-build_program play play.c mp3.c
+# Rust programs live in one Cargo workspace, userland/rust/ (see its
+# Cargo.toml): each is a no_std staticlib exporting the `main` crt0
+# calls, linked here with the C libc (and any C sources of its own) like
+# any other program. --config names the workspace's own config
+# explicitly (target x86_64-unknown-none), since cargo otherwise only
+# finds .cargo/config.toml relative to the current directory.
+cargo build --release --quiet \
+    --manifest-path userland/rust/Cargo.toml \
+    --config userland/rust/.cargo/config.toml
+RUST_OUT=rust/target/x86_64-unknown-none/release
+
+build_program play rust/play/c/mp3.c "$RUST_OUT/libplay.a"
 build_program pipetest pipetest.c
 build_program sh sh.c
 build_program tile tile.c

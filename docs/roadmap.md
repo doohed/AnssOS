@@ -573,6 +573,22 @@ virtio-gpu queue.
       with the host's own decode of the same file, with no dropouts under
       TCG. See [play.md](play.md#mp3).
 
+- [x] **M23 -- `play` rewritten in Rust + ratatui.** Rust userland now
+      lives in one Cargo workspace, `userland/rust/`: `anssos/` is the
+      shared runtime (FFI wrappers over the C libc, the global allocator
+      on `malloc()`, the panic handler), and `play/` is a `#![no_std]`
+      staticlib for `x86_64-unknown-none` that also holds its own C
+      (`c/mp3.c`) and vendored minimp3 (`vendor/`). `build-userland.sh`
+      builds the workspace and links each program with `crt0.o` and the
+      C libc. Ratatui 0.30 runs without std; `play/src/backend.rs` is a
+      custom `Backend` that emits only the console's ANSI subset and
+      ASCII symbols. **The console quirk this found:** writing the
+      bottom-right cell wraps the cursor immediately and scrolls the
+      screen, so the backend reports one row fewer than the console has.
+      Verified the same way as M22: the guest's decoded output
+      correlates 0.9999 with the reference, with no dropouts under TCG.
+      See [play.md](play.md#design-notes).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no

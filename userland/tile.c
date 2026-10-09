@@ -13,11 +13,11 @@
  *     bookkeeping. Running scarf/play *as* a pane needs a real per-pane
  *     ANSI virtual terminal and is explicitly out of scope here.
  *   - redraw only happens for panes that actually produced new output,
- *     not on a fixed timer -- unlike play.c's spectrum, which needed
+ *     not on a fixed timer -- unlike play's spectrum, which needed
  *     near-continuous redraws to look reactive.
  *
  * Reuses the same abuf/ab_str/ab_int/ab_goto output-buffer conventions
- * userland/scarf.c and userland/play.c already established (one
+ * userland/scarf.c and play (userland/rust/play/) already established (one
  * write() per redraw, every line positioned explicitly with
  * ESC[row;colH) rather than inventing new ones -- see either of their
  * own comments on why. Since every pane's cell is always written at a

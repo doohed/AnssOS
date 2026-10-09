@@ -18,7 +18,11 @@ FROM debian:trixie-20260803-slim
 #   build-userland.sh  -> the same $CC/$LD, plus python3
 #                         (gen-test-tone.py synthesizes a WAV fixture --
 #                         real binary struct packing and float math, not
-#                         a fit for bash -- see docs/play.md)
+#                         a fit for bash -- see docs/play.md), plus cargo
+#                         with the x86_64-unknown-none target for play
+#                         (Rust + ratatui, userland/rust/) -- installed
+#                         via rustup below, not apt: Debian's rustc ships
+#                         no prebuilt core/alloc for that target.
 #   run-qemu.sh        -> qemu-system-x86_64, qemu-img, OVMF firmware
 #   format.sh          -> clang-format
 #
@@ -49,7 +53,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-utils \
         ovmf \
         python3 \
+        curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Rust for userland/rust/ (play): a minimal stable toolchain plus the bare-metal
+# x86_64 target. On an arm64 host this is still a native toolchain --
+# x86_64-unknown-none is a cross target, like clang's --target.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path \
+    && rustup target add x86_64-unknown-none \
+    && chmod -R a+w "$CARGO_HOME"
 
 # Self-configuring toolchain: both GNUmakefiles and build-userland.sh take
 # CC/LD from the environment (defaulting to cc/ld for a native x86_64 host

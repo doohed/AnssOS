@@ -1,0 +1,8 @@
+[build]
+target = "x86_64-unknown-none"
+
+# The target's defaults (static PIE, "kernel" code model) are kept: the
+# prebuilt core/alloc are compiled with them and LTO refuses to mix code
+# models. Both are fine for userland/link.ld's static ELF at 0x400000 --
+# the kernel model only needs addresses that fit in a sign-extended 32
+# bits, which 0x400000 does.

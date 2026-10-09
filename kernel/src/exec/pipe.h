@@ -14,7 +14,7 @@
  * the CPU to that process -- a real deadlock, not a style issue. Every
  * operation here returns immediately; callers that want blocking
  * semantics loop in their own ring-3 code instead (safely preemptible),
- * the same shape play.c's poll_key() loop already uses. */
+ * the same shape play's poll_key() loop (userland/rust/play/) already uses. */
 struct pipe {
     uint8_t buf[PIPE_BUF_SIZE];
     size_t head;  /* Index of the next byte to read. */

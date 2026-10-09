@@ -1,44 +1,39 @@
 # play
 
-An interactive WAV/PCM CLI player. It lives in `userland/play.c` and
-plays a playlist of files over the new `virtio-sound` driver
-(`kernel/src/drivers/virtio/virtio_snd.c`, M17).
+An interactive WAV/MP3 player with a [ratatui](https://ratatui.rs) UI,
+written in Rust (`userland/rust/play/`). It plays a playlist of files over the
+`virtio-sound` driver (`kernel/src/drivers/virtio/virtio_snd.c`, M17).
 
 ```
 AnssOS:/> play testtone.wav                # the built-in test fixture
-AnssOS:/> play song1.wav song2.wav song3.wav
+AnssOS:/> play song1.mp3 song2.wav song3.mp3
 ```
 
 ## Screen
 
 ```
- AnssOS play                                                          [1/3]
-Track:  song1.wav
-Format: 44100 Hz, stereo, 16-bit PCM
-
-    #  #
-   ## # #
-   ######## # #
-   ############  ####
-   ##################
-
-[##############################------------------------------] 01:02 / 02:00
-
-Volume: [###########---------] 110%
-State:  PLAYING
-
-space pause   n next   q quit   +/- volume
++ AnssOS play ---------------------------------------------------- [1/3] +
+|Track:  song1.mp3                                                       |
+|Format: 48000 Hz, stereo, MP3 320 kbps                                  |
+|+ spectrum 60 Hz - 7 kHz ----------------------------------------------+|
+||                                                                      ||
+||    ##  ##                                                            ||
+|| ## ##  ## ## ==                                                      ||
+|| ## ## ### ## ## ## ##          __                                    ||
+|+----------------------------------------------------------------------+|
+|01:02 / 02:00 ######################-----------------------------------  |
+|Volume 110%   ######################################-------------------  |
+|PLAYING                                                                 |
++------------- space pause | n next | q quit | +/- volume ---------------+
 ```
 
-The header bar is reverse video (`ESC[7m`) — the only "color" this
-console's ANSI parser supports (no SGR color codes, see
+It fills the whole terminal; the spectrum box takes whatever height is
+left over. The title and ` PAUSED ` are reverse video (`ESC[7m`), the
+only "color" this console's ANSI parser supports (no SGR color codes; see
 `docs/architecture.md`'s console section). Everything else is plain
-ASCII; `font8x8_basic` has no box-drawing glyphs to draw a real border
-with. The spectrum sits between the format line and the duration bar,
-and is deliberately drawn at the *exact same width* as the duration bar
-below it (`bar_display_width()` computes it once, shared by both) rather
-than each picking its own — see "Spectrum analyzer" below for how the
-spectrum itself works without any floating point.
+ASCII, because `font8x8_basic` has no box-drawing or block glyphs. Every
+widget is given an ASCII symbol set for its borders, bars and gauges
+(see "Design notes" below).
 
 ## Keys
 
@@ -60,8 +55,8 @@ PCM, 16-bit signed little-endian, mono or stereo, 44100 Hz or 48000 Hz
 only. That is not an arbitrary restriction — it is exactly what
 `virtio_snd_open()` accepts (see `docs/architecture.md`); anything else
 prints an error naming the actual unsupported field (format/bit depth/
-channel count/rate) and moves on to the next track. `play.c`'s own WAV
-parser walks RIFF chunks looking for `fmt `/`data` rather than assuming
+channel count/rate) and moves on to the next track. The WAV parser
+(`src/source.rs`) walks RIFF chunks looking for `fmt `/`data` rather than assuming
 a fixed layout, since some WAV files carry a `LIST`/`fact` chunk in
 between.
 
@@ -69,8 +64,10 @@ between.
 
 `play` also plays MP3s (MPEG-1/2 layer I-III), decoded by
 [minimp3](https://github.com/lieff/minimp3) -- a CC0 single-header
-decoder vendored unmodified in `userland/third_party/minimp3/` and
-compiled in `userland/mp3.c`. The format is sniffed from the file's first
+decoder vendored unmodified in `userland/rust/play/vendor/minimp3/` and
+compiled in `userland/rust/play/c/mp3.c`, called from Rust over FFI
+(`src/source.rs` mirrors its `mp3dec_t` struct field for field). The
+format is sniffed from the file's first
 bytes (`RIFF` vs. an ID3v2 tag or MPEG frame sync), never the extension,
 so an MP3 named `.wav` plays too. The decoded rate still has to be
 44100 or 48000 Hz; a mono or stereo MP3 at any bitrate is fine.
@@ -93,87 +90,110 @@ This needed two kernel changes first, since minimp3 is float-based:
 - **A 64 KiB user stack** (was 16 KiB): `mp3dec_decode_frame()` alone
   keeps a ~16 KiB scratch struct on the stack.
 
-Volume and the spectrum stay integer-only -- they predate this and have
-no reason to change.
+Volume and the spectrum are integer-only (see below for why that matters
+on the Rust side).
 
 ## Design notes
 
-The screen reuses `userland/scarf.c`'s exact conventions rather than
-inventing new ones — it's the only other AnssOS program that draws a
-fixed screen instead of scrolling lines: a small `abuf`/`ab_str`/
-`ab_int` output buffer flushed with one `write()` per redraw, every line
-positioned explicitly with `ESC[row;colH` instead of `\r\n` (a line that
-exactly fills the terminal width auto-wraps, and a trailing newline
-after it then advances a *second* time — the same drifting-frame bug
-`scarf.md`'s design notes already describe), and `ESC[K` to clear a line
-before redrawing it.
+**No Rust std.** AnssOS has no Rust standard library, so Rust userland
+is `#![no_std]` and lives in one Cargo workspace, `userland/rust/`, with
+one lockfile and one `target/`:
 
-A full redraw happens on **every** 4096-byte audio chunk (~46ms) now,
-not throttled to once/second the way an earlier version of this did —
-the spectrum needs to actually move with the music. That seemed risky
-given `scarf.md#performance`'s warning that a full-framebuffer
-`virtio_gpu_flush()` "dominates" under TCG, so it was measured rather
-than assumed: timing a full 2.000s clip end-to-end (host wall-clock,
-`play` issuing one redraw per chunk throughout) came out to 2.02s real
-time — no measurable lag. The flush cost scarf hit is apparently
-dominated by TCG's virtqueue round-trip overhead itself, not by how
-much of the framebuffer changed or whether a real display is attached,
-so redrawing more of the same small screen doesn't cost meaningfully
-more per redraw — only redrawing *more often* would, and once-per-chunk
-turned out to be cheap enough.
+```
+userland/rust/
+  Cargo.toml          workspace: members, shared deps, release profile
+  .cargo/config.toml  target = x86_64-unknown-none
+  anssos/             runtime crate shared by every Rust program
+  play/
+    src/              the player (lib.rs, backend.rs, source.rs, ...)
+    c/mp3.c           play's own C: compiles minimp3's implementation
+    vendor/minimp3/   minimp3, vendored unmodified (CC0)
+```
+
+Each program is a **static library** for `x86_64-unknown-none`.
+`scripts/build-userland.sh` builds the workspace with `cargo build
+--release --manifest-path ... --config ...`, which works from any
+directory, then links `libplay.a` with `crt0.o`, the hand-written C libc
+and `c/mp3.c`, using the same `link.ld` as every C program. `crt0` calls
+the `main` that `play` exports with `#[unsafe(no_mangle)] extern "C"`,
+just as it would a C program's. The C parts are compiled by the build
+script, not by Cargo, so they get exactly the same `CC`/`CFLAGS` as the
+rest of userland.
+
+The `anssos` runtime crate holds everything that isn't specific to
+`play`:
+
+- FFI bindings to the libc (`read`/`open`/`lseek`/`ioctl`/termios/the
+  audio syscalls/`poll_key`), wrapped in RAII types (`File`, `Audio` and
+  `RawMode` close or restore on drop).
+- The global allocator, on the libc's `malloc()`/`free()`. That `malloc`
+  only promises its own alignment, so every block is over-allocated and
+  the original pointer is stashed just below the aligned one.
+- The panic handler, which resets console attributes, shows the cursor,
+  prints the panic and exits with code 101.
+
+A new Rust program is a new workspace member that depends on `anssos`,
+plus one `build_program` line in `build-userland.sh`.
+
+**Ratatui without std.** Ratatui 0.30 supports `no_std`
+(`default-features = false`; it needs `alloc`). Its built-in backends
+(crossterm and the rest) need std, so `play/src/backend.rs` implements
+`ratatui::backend::Backend` for the AnssOS console. It queues output into
+one buffer and writes it with a single `write()` per frame. It emits only
+the escapes the console understands: CUP, ED/EL, and SGR 7/0. CUP is
+skipped for consecutive cells on the same row. Any non-ASCII symbol is
+mapped to an ASCII stand-in, which is only a fallback: `src/ui.rs` gives
+every widget ASCII sets (`+-|` borders, `#`/`=`/`_` bar tops, `#`/`-`
+gauges).
+
+**The bottom row stays empty.** The console wraps the cursor as soon as
+a glyph lands in the last column; it has no deferred wrap. Writing the
+bottom-right cell would therefore scroll the whole screen up a line, so
+the backend reports one row fewer than the console has.
+
+**Soft-float.** `x86_64-unknown-none` is a soft-float target, so the
+little float math ratatui does runs in software. That covers its
+constraint-solver layout and the gauges' ratios. The solver runs once
+per terminal size: `ui::Ui` caches the computed rectangles. The hot paths
+(PCM copy, volume and the Goertzel filters) stay integer. minimp3 is C
+compiled with SSE and does use the FPU, which is safe because the kernel
+saves and restores each process's FPU/SSE state.
+
+**Redraw rate.** The screen redraws after every 4 KiB audio chunk, about
+21 ms of 48 kHz stereo. Ratatui diffs each frame against the previous one
+and only sends changed cells. Tested under TCG on an Apple Silicon host,
+playback keeps up in real time. The guest's output, captured with QEMU's
+`wav` audiodev, correlates 0.9999 with the host's own decode of the same
+MP3, with no dropouts.
 
 ## Spectrum analyzer
 
-A cava-style per-frequency-band level meter needs some kind of DFT, but
-a real FFT is exactly the float-heavy territory "Why WAV, not MP3" above
-already ruled out for this kernel. The **Goertzel algorithm** sidesteps
-that: it
-computes a single DFT bin's magnitude as a plain 2nd-order IIR
-recurrence,
+A cava-style per-band level meter (`src/spectrum.rs`) needs some kind of
+DFT, but the crate is soft-float, so a per-sample float FFT would be
+expensive. The **Goertzel algorithm** avoids that. It computes a single
+DFT bin's magnitude as a plain 2nd-order IIR recurrence,
 ```
 s[n] = x[n] + coeff*s[n-1] - s[n-2]
 power = s[n-1]^2 + s[n-2]^2 - coeff*s[n-1]*s[n-2]
 ```
 with exactly one constant (`coeff = 2*cos(2*pi*f/fs)`) per frequency
-band, and — critically — that constant depends only on the target
-frequency and sample rate, not on the block size or anything computed
-at runtime. So it can be precomputed *on the host* as a Q15 fixed-point
-integer and hardcoded, needing no `cos()` (and thus no float) in AnssOS
-itself at all: `userland/play.c` has two 20-entry tables (one per
-supported sample rate), generated by a one-off Python calculation and
-pasted in as `static const int32_t` literals, log-spaced from 60 Hz to
-7000 Hz. The recurrence itself runs in `int64_t` (comfortable headroom
-for ~2048 samples of `int16_t`-range input; the accumulator is bounded,
-not exponentially unstable, since Goertzel's poles sit exactly on the
-unit circle).
+band. That constant depends only on the target frequency and the sample
+rate, so it's precomputed on the host as a Q15 fixed-point integer. There
+are two 20-entry tables (one per supported sample rate), log-spaced from
+60 Hz to 7000 Hz. The recurrence runs in `i64`, which leaves plenty of
+headroom for ~2048 samples of `i16` input. The accumulator is bounded,
+not exponentially unstable, because Goertzel's poles sit exactly on the
+unit circle.
 
-Only 20 actual frequency bands come out of this (`N_BARS`, one per
-coefficient table entry) — matching that to whatever width the terminal
-actually gives the bar would need recomputing coefficients at runtime,
-which is exactly the "no `cos()` at runtime" constraint this whole
-approach exists to avoid. Instead `draw_screen()` stretches (or, on a
-narrow terminal, compresses) those 20 bands across `bar_display_width()`
-display columns by nearest-neighbor lookup (`bar_idx = col * N_BARS /
-bar_w`) — cheap, and the band boundaries are already coarse (log-spaced,
-DFT-leakage-blurred) enough that a few adjacent columns sharing one
-band's value doesn't read as an artifact.
-
-Turning raw power into a 0-8 bar height needs a magnitude scale, which
-normally means `sqrt`/`log` — also unavailable without float. Bit-length
-of the (integer) power value is a free, exact stand-in for log2, so
-`height = (bitlen64(power) - 25) / 3` — floor and divisor picked by
-simulating this *exact* fixed-point recurrence in Python against real
-audio first (a pure 440 Hz tone and an actual music file) rather than
-guessing: silence/quiet bands land under bit-length ~25, a present tone
-or music band lands ~27-47, and that range maps cleanly onto 8 rows.
-Verified in-VM afterward two ways: the 440 Hz test tone produces exactly
-one dominant bar at the band nearest 445 Hz (its neighbors show mild
-spectral leakage, everything else near-silent) confirming the tables and
-recurrence are correct; real music produces a visibly different bar
-pattern between two snapshots ~1.6s apart, confirming it's actually
-reactive and not stuck. Heights decay at most one row per redraw rather
-than snapping straight to the new value — the "gravity" a real level
-meter has, and cheap enough to be worth doing (one comparison per bar).
+Turning raw power into a bar height needs a log scale. The power's bit
+length is an exact integer stand-in for log2: `level = bitlen(power) -
+25`, clamped to 0-24. The floor of 25 was calibrated by simulating this
+exact recurrence against real audio: quiet bands land under bit length
+~25, and a present tone or music lands at about 27-47. The 20 levels are
+handed to ratatui's `BarChart` with `max(24)`. It scales them to the
+spectrum box's height and spreads them across its width, with bar width
+and gap computed from that width. Bars jump straight up but fall at most
+3 levels per chunk, a cheap "gravity" that keeps them from flickering.
 
 ## Adding your own audio
 
@@ -201,14 +221,14 @@ growing the image file as needed:
 scripts/disk-put.py AnssOS-disk.img yourfile.wav
 ```
 No kernel rebuild, no doubled memory cost, and it survives reboots the
-same way anything `sync`'d from inside the VM would. Only PCM
-constraints from "Format support" above still apply — the script
-doesn't validate or convert audio, it just moves bytes.
+same way anything `sync`'d from inside the VM would. The constraints
+from "Format support" and "MP3" above still apply — the script doesn't
+validate or convert audio, it just moves bytes.
 
 A quirk found using this on a real-world file: some WAV writers never
 patch the true length back into the `RIFF`/`data` chunk-size fields
 (`0xFFFFFFFF`, a "streamed, size unknown at write time" placeholder) —
-`play.c`'s parser clamps the declared `data` chunk size to what's
+the parser clamps the declared `data` chunk size to what's
 actually left in the file rather than trusting the header, so the
 progress bar shows the real duration instead of a nonsensical
 multi-hour one.
@@ -239,4 +259,6 @@ working audio, override the backend: `QEMU_AUDIODEV="pa,id=snd0"`
 ## Not supported
 
 Seeking, a persistent playlist file, per-track metadata display beyond
-the filename, and (see above) anything but PCM WAV.
+the filename (ID3 tags are skipped, not read), and formats other than PCM
+WAV and MP3. Sample rates other than 44100/48000 Hz would need
+resampling.

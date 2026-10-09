@@ -400,7 +400,7 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
      * spins can't yield to the other process producing the data). A
      * program that wants blocking-looking behavior over a pipe loops in
      * its own ring-3 code instead (see userland/sh.c), the same shape
-     * play.c's poll_key() loop already uses. */
+     * play's poll_key() loop (userland/rust/play/) already uses. */
     if (task != NULL && task->stdin_pipe != NULL) {
         return pipe_read(task->stdin_pipe, buf, len);
     }

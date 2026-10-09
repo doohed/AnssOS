@@ -8,6 +8,7 @@ kernel/src/exec/*.wav.bin
 # Userland (test payload) build output
 userland/**/*.o
 userland/*.elf
+userland/rust/target/
 
 # Root build output
 /*.iso
