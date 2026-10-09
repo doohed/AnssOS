@@ -104,9 +104,13 @@ only what the console understands (see
 
 Ratatui diffs each frame against the previous one, so only changed cells
 are sent. `anssos_tui::init()` clears the screen and hides the cursor
-(programs draw their own as a solid cell); `restore()` brings back normal
-video, a cleared screen and a visible cursor on exit. `solid()` is the
-one shared style: reverse video, which on a space is a solid cell.
+(programs draw their own); `restore()` brings back normal video, a
+cleared screen and a visible cursor on exit.
+
+**The shared look** is `anssos_tui::chrome`: round-ended tabs, grey
+rules, keycaps, the grey and on-accent colors and the arrow and round
+glyphs, all taken from sh's prompt. scarf, play and tile draw their
+titles, chips and key hints with it; each picks its own accent colors.
 
 **The bottom row stays empty.** The console wraps the cursor as soon as
 a glyph lands in the last column; it has no deferred wrap. Writing the

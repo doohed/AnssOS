@@ -97,6 +97,7 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
             if !prefix {
                 if key == CTRL_B {
                     prefix = true;
+                    dirty = true; // the header shows it
                 } else {
                     panes[focused].send(key);
                 }
@@ -128,7 +129,7 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
         }
 
         if dirty {
-            let _ = terminal.draw(|frame| ui::render(frame, &panes, &slots, &dividers, focused));
+            let _ = terminal.draw(|frame| ui::render(frame, &panes, &slots, &dividers, focused, prefix));
             dirty = false;
         }
         if !busy {

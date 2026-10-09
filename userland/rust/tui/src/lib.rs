@@ -1,22 +1,21 @@
-//! ratatui on AnssOS: the console backend (backend.rs) plus the setup,
-//! teardown and one style every full-screen program here shares.
+//! ratatui on AnssOS: the console backend (backend.rs), the setup and
+//! teardown every full-screen program here shares, and their shared look
+//! (chrome.rs: tabs, rules, chips and keycaps).
 //!
 //! The console (kernel/src/console/fbconsole.c) draws ASCII plus a few
 //! extra glyphs (console_has()), with the 16 ANSI colors, bold, dim and
-//! reverse video -- see backend.rs for what that means for drawing. The one trick that makes it look like more
-//! than a terminal dump: a reverse-video *space* is a solid cell
-//! (`solid()`), so bars, title strips and fills render as solid blocks.
+//! reverse video -- see backend.rs for what that means for drawing.
 
 #![no_std]
 
 extern crate alloc;
 
 mod backend;
+pub mod chrome;
 
 pub use backend::AnssBackend;
 
 use ratatui::Terminal;
-use ratatui::style::Style;
 
 pub type Term = Terminal<AnssBackend>;
 
@@ -46,9 +45,4 @@ pub fn restore() {
 pub fn console_has(c: char) -> bool {
     const EXTRA: &str = "·…─│┌┐└┘├┤┬┴┼╭╮╯╰█▌▐●✔✘❮❯\u{E0B0}\u{E0B1}\u{E0B2}\u{E0B3}\u{E0B4}\u{E0B5}\u{E0B6}\u{E0B7}";
     (' '..='~').contains(&c) || EXTRA.contains(c)
-}
-
-/// Reverse video: on a space, a solid cell.
-pub fn solid() -> Style {
-    Style::new().reversed()
 }

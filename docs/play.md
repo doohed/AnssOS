@@ -11,15 +11,19 @@ written in Rust (`userland/rust/play/`). It plays a playlist of files over the
 
 ## Screen
 
-A solid header bar with the track number; the file name and format; a
-spectrum analyzer with peak markers; a progress bar with elapsed and
-total time; the play state and a volume gauge; and a footer of key
-hints in reversed keycaps. The screen is drawn in monochrome: reverse
-video (`ESC[7m`) only, no colors. (The console has since gained the 16
-ANSI colors, see `docs/architecture.md`'s console section; `play`
-predates them.) But a reverse-video *space* is a solid cell, so the
-header and footer bars, the spectrum's bars and the gauges' fill are all
-reversed spaces.
+A "play" tab and a grey rule across the top with the track counter at
+its end; the file name and format; a spectrum analyzer with peak
+markers; a progress bar with elapsed and total time; a status chip and a
+volume gauge; and keycaps along the bottom. It shares its look with
+[scarf](scarf.md#screen) and [tile](tile.md) (`anssos_tui::chrome`, see
+[rust.md](rust.md#ratatui-without-std)).
+
+The accent is green while playing and yellow while paused: the tab, the
+status chip and the progress bar's fill all follow it. The spectrum's
+bars are colored like a level meter, green, then yellow, then red near
+the top, and each peak marker takes the color of the row it floats in.
+Volume is cyan. Bars and fills are colored spaces, so they draw as solid
+blocks.
 
 The content is a column capped at 100 columns, centred horizontally and
 vertically between the header and footer. The spectrum gets at most one

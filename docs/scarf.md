@@ -21,7 +21,8 @@ shell's cwd.
 
 A file sidebar on the left and the file on the right, split by a thin
 grey line; a status bar and the message/command line along the bottom.
-It uses the same palette and shapes as [sh](sh.md)'s prompt:
+It uses the same palette and shapes as [sh](sh.md)'s prompt, shared
+with play and tile (`anssos_tui::chrome`):
 
 - each pane's title is a round-ended tab, followed by a grey rule;
 - the status bar is a dark band with the mode chip (`NORMAL`, `INSERT`,

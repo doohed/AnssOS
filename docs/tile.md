@@ -40,8 +40,12 @@ Rewritten in Rust with ratatui (`userland/rust/tile/`, M25). Each pane
 has its own terminal emulator, so anything that runs on the console
 runs in a pane too, including `scarf` and `play`.
 
-A solid header, a title per pane (the focused one solid, the others a
-rule), solid dividers between panes, and key hints along the bottom.
+The same look as [scarf](scarf.md#screen) and [play](play.md#screen):
+a "tile" tab and a grey rule across the top, with the pane counter at its
+end; a tab for each pane's title, followed by a rule; thin grey lines
+between side-by-side panes; and keycaps along the bottom. The focused
+pane's tab and cursor are blue. After `Ctrl-b`, the "tile" tab turns
+yellow until the command key arrives.
 
 | Key | Action |
 |---|---|
@@ -53,7 +57,7 @@ rule), solid dividers between panes, and key hints along the bottom.
 
 `tile` takes 1-4 panes. Two are side by side; three put the third across
 the full bottom row; four make a 2x2 grid. A pane whose shell exits shows
-`[exited]`, and tile exits once every pane has.
+`exited` in its tab, and tile exits once every pane has.
 
 ### How a pane works
 
@@ -76,7 +80,7 @@ the full bottom row; four make a 2x2 grid. A pane whose shell exits shows
 4. **Drawing** (`ui.rs`). All the panes' grids, the titles, the dividers
    and the key hints are composed into one ratatui frame. Ratatui sends
    only the cells that changed since the last frame. The focused pane
-   shows its cursor as a solid cell, unless the program hid it (as
+   shows its cursor as a blue cell, unless the program hid it (as
    full-screen programs do).
 5. **Input.** tile polls the keyboard and writes each key into the
    focused pane's stdin pipe. Programs that read keys with `read()`

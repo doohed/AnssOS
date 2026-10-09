@@ -1,6 +1,7 @@
 //! Drawing scarf.
 //!
-//! Same palette and shapes as sh's prompt: every pane title is a
+//! The look scarf, play and tile share (anssos_tui::chrome), from sh's
+//! prompt: every pane title is a
 //! round-ended tab followed by a grey rule, panes are split by a thin grey
 //! `│`, and the status bar is a dark band with a mode chip on the left
 //! and the position on the right, joined to it by arrow ends. Everything
@@ -28,6 +29,8 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
+
+use anssos_tui::chrome::{self, ARROW_LEFT, ARROW_RIGHT, GREY, ON_ACCENT, fg, fill, put};
 
 use crate::editor::{Editor, Focus, Mode};
 
@@ -105,17 +108,6 @@ pub fn render(frame: &mut Frame, ed: &Editor, lay: &Layout) {
     draw_message(buf, lay.message, ed, accent);
 }
 
-// Glyphs beyond ASCII in the console font (kernel/src/console/font8x16.h).
-const TAB_LEFT: &str = "\u{E0B6}"; // solid left round
-const TAB_RIGHT: &str = "\u{E0B4}"; // solid right round
-const ARROW_RIGHT: &str = "\u{E0B0}"; // solid right arrow
-const ARROW_LEFT: &str = "\u{E0B2}"; // solid left arrow
-
-/// Rules, the divider, line numbers, dotfiles, the status band.
-const GREY: Color = Color::DarkGray;
-/// Text on a colored chip or tab.
-const ON_ACCENT: Color = Color::Black;
-
 /// The color of everything that marks focus, by mode.
 fn accent(ed: &Editor) -> Color {
     match (ed.mode, ed.focus) {
@@ -126,45 +118,11 @@ fn accent(ed: &Editor) -> Color {
     }
 }
 
-fn fg(c: Color) -> Style {
-    Style::new().fg(c)
-}
-
-fn fill(buf: &mut Buffer, area: Rect, style: Style) {
-    for y in area.top()..area.bottom() {
-        buf.set_stringn(area.x, y, " ".repeat(area.width as usize), area.width as usize, style);
-    }
-}
-
-/// Writes `text` at (x, y) without passing `right`; returns the column
-/// after it.
-fn put(buf: &mut Buffer, x: u16, y: u16, right: u16, text: &str, style: Style) -> u16 {
-    if x >= right {
-        return x;
-    }
-    buf.set_stringn(x, y, text, (right - x) as usize, style).0
-}
-
-/// A pane's first row: a round-ended tab holding `text`, in the accent
-/// color when the pane has focus and grey otherwise, then a grey rule to
-/// the pane's right edge.
+/// A pane's first row: a tab holding `text`, in the accent color when
+/// the pane has focus and grey otherwise, then a grey rule.
 fn title(buf: &mut Buffer, area: Rect, text: &str, focused: bool, accent: Color) {
-    if area.height == 0 || area.width < 4 {
-        return;
-    }
-    let (tab, label) = if focused {
-        (accent, Style::new().fg(ON_ACCENT).bg(accent))
-    } else {
-        (GREY, Style::new().fg(Color::Gray).bg(GREY))
-    };
-    let (y, right) = (area.y, area.right());
-    let mut x = put(buf, area.x + 1, y, right, TAB_LEFT, fg(tab));
-    // Leave room for the closing round end.
-    x = put(buf, x, y, right.saturating_sub(1), &format!(" {text} "), label);
-    x = put(buf, x, y, right, TAB_RIGHT, fg(tab));
-    if x + 1 < right {
-        put(buf, x + 1, y, right, &"─".repeat((right - x - 1) as usize), fg(GREY));
-    }
+    let (color, text_color) = if focused { (accent, ON_ACCENT) } else { (GREY, Color::Gray) };
+    chrome::title(buf, Rect { height: 1, ..area }, text, color, text_color);
 }
 
 /// A thin grey line, joined to the title rules on its first row.

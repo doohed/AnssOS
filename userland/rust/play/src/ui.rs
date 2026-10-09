@@ -1,29 +1,14 @@
 //! The player screen.
 //!
-//! This screen is drawn in monochrome -- reverse video only, no colors
-//! -- but a reverse-video *space* is a solid cell, and that is what makes
-//! this look like more than a terminal dump: the header/footer bars, the
-//! spectrum's bars and the gauges' fill are all reversed spaces, so they
-//! render as solid blocks.
-//!
-//! ```text
-//!  AnssOS play                                              track 2 of 2   <- header bar
-//!
-//!        song.mp3
-//!
-//!        MP3 320 kbps   48 kHz   stereo
-//!
-//!        ##  ##  --                                                   <- solid bars,
-//!        ##  ##  ##  --  ##                                              peak markers
-//!        ##  ##  ##  ##  ##  ##      ##
-//!        60 Hz         210           735          2k          7 kHz
-//!
-//!        01:02  ################-------------------------------  03:45
-//!
-//!        > PLAYING                          VOL ##########---------- 100%
-//!
-//!  SPACE pause   N next   Q quit   +/- volume                         <- footer, keys reversed
-//! ```
+//! The same look as scarf and tile (anssos_tui::chrome): a "play" tab and
+//! a grey rule across the top with the track counter at its end, and
+//! keycaps along the bottom. The accent is green while playing and
+//! yellow while paused: the tab, the status chip, and the progress and
+//! volume meters' fill (on a grey track) all follow it. The spectrum's
+//! bars are colored by height like a level meter -- green, then yellow,
+//! then red near the top -- and each peak marker takes the color of the
+//! row it floats in. The bars and fills are colored spaces, so they draw
+//! as solid blocks.
 //!
 //! The content is a centered column capped at MAX_WIDTH, vertically
 //! centered between the header and footer, with the spectrum's height
@@ -38,11 +23,10 @@ use alloc::string::String;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
-use anssos_tui::solid;
+use anssos_tui::chrome::{self, GREY, ON_ACCENT, fg};
 
 use crate::source::TrackInfo;
 use crate::spectrum::{MAX_LEVEL, N_BANDS};
@@ -72,6 +56,10 @@ pub struct View<'a> {
     pub peaks: &'a [u64; N_BANDS],
 }
 
+/// The color of everything that shows the player's state.
+fn accent(paused: bool) -> Color {
+    if paused { Color::Yellow } else { Color::Green }
+}
 
 pub fn render(frame: &mut Frame, v: &View) {
     let area = frame.area();
@@ -93,6 +81,7 @@ pub fn render(frame: &mut Frame, v: &View) {
     let content = (FIXED_ROWS + spectrum_rows).min(body);
     let mut y = area.y + 1 + (body - content) / 2;
     let bottom = area.y + area.height - 1; // the footer row
+    let accent = accent(v.paused);
     let mut row = |rows: u16| {
         let r = Rect { x, y, width, height: rows.min(bottom.saturating_sub(y)) };
         y = (y + rows).min(bottom);
@@ -104,29 +93,26 @@ pub fn render(frame: &mut Frame, v: &View) {
     Spectrum { levels: v.levels, peaks: v.peaks }.render(row(spectrum_rows), buf);
     axis(buf, row(1));
     row(1);
-    progress(buf, row(1), v.elapsed_secs, v.info.total_secs);
+    progress(buf, row(1), v.elapsed_secs, v.info.total_secs, accent);
     row(1);
-    status(buf, row(1), v.paused, v.volume);
+    status(buf, row(1), v.paused, v.volume, accent);
 }
 
-/// Solid bar across the top: program name left, track counter right.
+/// The tab, a rule, and the track counter at the rule's end.
 fn header(buf: &mut Buffer, area: Rect, v: &View) {
-    buf.set_string(area.x, area.y, " ".repeat(area.width as usize), solid());
-    buf.set_string(area.x + 1, area.y, "AnssOS play", solid());
-    let counter = format!("track {} of {} ", v.track_idx, v.track_count);
-    let cx = area.right().saturating_sub(counter.len() as u16);
-    buf.set_string(cx, area.y, counter, solid());
+    let counter = format!(" track {} of {}", v.track_idx, v.track_count);
+    let counter_x = area.right().saturating_sub(counter.len() as u16 + 1);
+    let x = chrome::tab(buf, area.x + 1, area.y, area.right(), "play", accent(v.paused), ON_ACCENT);
+    chrome::rule(buf, x + 1, area.y, counter_x);
+    if counter_x > x + 1 {
+        chrome::put(buf, counter_x, area.y, area.right(), &counter, fg(Color::Gray));
+    }
 }
 
-/// htop-style key hints along the bottom: keycaps reversed, actions plain.
+/// Key hints along the bottom row.
 fn footer(buf: &mut Buffer, area: Rect) {
-    let keys = [(" SPACE ", " pause  "), (" N ", " next  "), (" Q ", " quit  "), (" +/- ", " volume")];
-    let mut spans = alloc::vec![Span::raw(" ")];
-    for (key, action) in keys {
-        spans.push(Span::styled(key, solid()));
-        spans.push(Span::raw(action));
-    }
-    buf.set_line(area.x, area.bottom() - 1, &Line::from(spans), area.width);
+    let keys = [("SPACE", "pause"), ("N", "next"), ("Q", "quit"), ("+/-", "volume")];
+    chrome::key_hints(buf, Rect { y: area.bottom() - 1, height: 1, ..area }, &keys);
 }
 
 fn track_info(buf: &mut Buffer, area: Rect, v: &View) {
@@ -137,10 +123,10 @@ fn track_info(buf: &mut Buffer, area: Rect, v: &View) {
         format!("{}.{} kHz", v.info.rate / 1000, v.info.rate % 1000 / 100)
     };
     let codec = if v.info.mp3_kbps > 0 { format!("MP3 {} kbps", v.info.mp3_kbps) } else { "WAV 16-bit PCM".into() };
-    buf.set_stringn(area.x, area.y, v.name, area.width as usize, Style::new());
+    buf.set_stringn(area.x, area.y, v.name, area.width as usize, fg(Color::White).add_modifier(Modifier::BOLD));
     if area.height > 2 {
         let details = format!("{codec}   {rate}   {channels}");
-        buf.set_stringn(area.x, area.y + 2, details, area.width as usize, Style::new());
+        buf.set_stringn(area.x, area.y + 2, details, area.width as usize, fg(Color::Gray));
     }
 }
 
@@ -171,7 +157,7 @@ impl Bars {
     }
 }
 
-/// Solid bars (reversed spaces) with a `-` peak marker floating above
+/// Solid bars (colored spaces) with a `─` peak marker floating above
 /// each one while its peak holds.
 struct Spectrum<'a> {
     levels: &'a [u64; N_BANDS],
@@ -193,12 +179,26 @@ impl Widget for Spectrum<'_> {
             let peak = to_rows(self.peaks[band]) as u16;
             for i in 0..height {
                 let y = area.bottom() - 1 - i;
-                buf.set_string(x, y, " ".repeat(bar as usize), solid());
+                buf.set_string(x, y, " ".repeat(bar as usize), Style::new().bg(level_color(i, area.height)));
             }
             if peak > height {
-                buf.set_string(x, area.bottom() - peak, "-".repeat(bar as usize), Style::new());
+                let y = area.bottom() - peak;
+                buf.set_string(x, y, "─".repeat(bar as usize), fg(level_color(peak - 1, area.height)));
             }
         }
+    }
+}
+
+/// A level meter's color for row `i` (0 = bottom) of `rows`: green for
+/// the lower 60%, yellow up to 85%, red above.
+fn level_color(i: u16, rows: u16) -> Color {
+    let pct = (i as u32 + 1) * 100 / rows.max(1) as u32;
+    if pct <= 60 {
+        Color::Green
+    } else if pct <= 85 {
+        Color::Yellow
+    } else {
+        Color::Red
     }
 }
 
@@ -221,46 +221,44 @@ fn axis(buf: &mut Buffer, area: Rect) {
             _ => (bar_x + bar / 2).saturating_sub(len / 2),
         };
         if x >= free_from && x + len <= area.right() {
-            buf.set_string(x, area.y, label, Style::new());
+            buf.set_string(x, area.y, label, fg(GREY));
             free_from = x + len + 1;
         }
     }
 }
 
-/// A meter: `filled` of `width` cells solid, the rest a `-` track.
-fn meter(buf: &mut Buffer, x: u16, y: u16, width: u16, filled: u16) {
+/// A meter: `filled` of `width` cells solid in `color`, the rest a grey
+/// track.
+fn meter(buf: &mut Buffer, x: u16, y: u16, width: u16, filled: u16, color: Color) {
     let filled = filled.min(width);
-    buf.set_string(x, y, " ".repeat(filled as usize), solid());
-    buf.set_string(x + filled, y, "-".repeat((width - filled) as usize), Style::new());
+    buf.set_string(x, y, " ".repeat(filled as usize), Style::new().bg(color));
+    buf.set_string(x + filled, y, "─".repeat((width - filled) as usize), fg(GREY));
 }
 
 fn clock(secs: u32) -> String {
     format!("{:02}:{:02}", (secs / 60).min(99), secs % 60)
 }
 
-/// `01:02  ######--------  03:45`
-fn progress(buf: &mut Buffer, area: Rect, elapsed: u32, total: u32) {
+/// `01:02  ######────────  03:45`
+fn progress(buf: &mut Buffer, area: Rect, elapsed: u32, total: u32, accent: Color) {
     if area.height == 0 || area.width < 16 {
         return;
     }
     let (left, right) = (clock(elapsed), clock(total));
     let track = area.width - 14;
     let filled = if total > 0 { (elapsed.min(total) as u64 * track as u64 / total as u64) as u16 } else { 0 };
-    buf.set_string(area.x, area.y, left, Style::new());
-    meter(buf, area.x + 7, area.y, track, filled);
-    buf.set_string(area.right() - 5, area.y, right, Style::new());
+    buf.set_string(area.x, area.y, left, fg(Color::White));
+    meter(buf, area.x + 7, area.y, track, filled, accent);
+    buf.set_string(area.right() - 5, area.y, right, fg(Color::Gray));
 }
 
-/// `> PLAYING` (or a reversed `|| PAUSED`) left, volume meter right.
-fn status(buf: &mut Buffer, area: Rect, paused: bool, volume: i32) {
+/// A `PLAYING`/`PAUSED` chip left, volume meter right.
+fn status(buf: &mut Buffer, area: Rect, paused: bool, volume: i32, accent: Color) {
     if area.height == 0 {
         return;
     }
-    if paused {
-        buf.set_string(area.x, area.y, " || PAUSED ", solid());
-    } else {
-        buf.set_string(area.x, area.y, "> PLAYING", Style::new());
-    }
+    let label = if paused { "PAUSED" } else { "PLAYING" };
+    chrome::tab(buf, area.x, area.y, area.right(), label, accent, ON_ACCENT);
 
     const VOL_CELLS: u16 = 20;
     let label = format!("{volume:>3}%");
@@ -269,8 +267,8 @@ fn status(buf: &mut Buffer, area: Rect, paused: bool, volume: i32) {
         return;
     }
     let x = area.right() - width;
-    buf.set_string(x, area.y, "VOL ", Style::new());
+    buf.set_string(x, area.y, "VOL ", fg(Color::Gray));
     // 0-200%, so 100% is half full.
-    meter(buf, x + 4, area.y, VOL_CELLS, (volume.clamp(0, 200) as u16 * VOL_CELLS) / 200);
-    buf.set_string(area.right() - label.len() as u16, area.y, label, Style::new());
+    meter(buf, x + 4, area.y, VOL_CELLS, (volume.clamp(0, 200) as u16 * VOL_CELLS) / 200, Color::Cyan);
+    buf.set_string(area.right() - label.len() as u16, area.y, label, fg(Color::White));
 }
