@@ -1,6 +1,7 @@
 #ifndef ARCH_X86_64_USERMODE_H
 #define ARCH_X86_64_USERMODE_H
 
+#include "fpu.h"
 #include "../../drivers/tty.h"
 #include "../../exec/pipe.h"
 #include "../../fs/vfs.h"
@@ -70,6 +71,14 @@ struct usertask {
      * get clobbered by that nested dispatch, stranding this task's real
      * resume point. rbx, rbp, r12, r13, r14, r15, rsp, in that order. */
     uint64_t kernel_resume[7];
+
+    /* This task's x87/SSE registers while it isn't the one on the CPU --
+     * saved/restored around every dispatch (see usermode.c's dispatch()
+     * and arch/x86_64/fpu.h). Set to the clean initial state by
+     * exec/elf.c's elf_load(); a fork()'d child gets a snapshot of its
+     * parent's *live* registers (exec/process.c's process_fork()), not
+     * this possibly-stale copy. */
+    uint8_t fpu_state[FPU_STATE_SIZE] __attribute__((aligned(16)));
 };
 
 /* The task currently "inside" enter_usermode()/resume_usermode() at the

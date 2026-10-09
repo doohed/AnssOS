@@ -16,7 +16,8 @@ CPPFLAGS := -I src
 # Internal flags that should not be changed by the user: this is a
 # freestanding x86_64 long-mode kernel loaded by Limine, so no libc,
 # no red zone (interrupts can land on top of the stack otherwise), no
-# SIMD (would need explicit FPU/SSE state management we don't have yet).
+# SIMD: the x87/SSE registers belong to userland, saved/restored per
+# process by src/arch/x86_64/fpu.c -- kernel code must never touch them.
 override CFLAGS += \
     -ffreestanding \
     -fno-stack-protector \

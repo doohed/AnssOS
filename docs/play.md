@@ -65,22 +65,36 @@ parser walks RIFF chunks looking for `fmt `/`data` rather than assuming
 a fixed layout, since some WAV files carry a `LIST`/`fact` chunk in
 between.
 
-## Why WAV, not MP3
+## MP3
 
-The user asked for an "mp3 player." Real MP3 decoding (Huffman-coded
-bitstream, IMDCT, a 32-band polyphase synthesis filterbank) is a large,
-float-heavy undertaking, and this kernel currently has **no FPU/SSE
-context-switch support at all** — both `kernel/GNUmakefile` and
-`scripts/build-userland.sh` build with `-mno-sse -mno-sse2 -mno-80387
--mno-mmx`, so floating point doesn't even compile today, let alone
-survive a preemption safely. `play`'s volume control is deliberately
-integer-only (`sample * volume / 100`) for exactly that reason. Real
-MP3 support is future work, in order: (1) FPU/SSE context-switch
-support (`XSAVE`/`FXSAVE` per-task, plus dropping `-mno-sse` for
-userland), (2) a decoder (porting something small like `minimp3` rather
-than hand-rolling Huffman/IMDCT/synthesis from scratch), (3) feeding its
-PCM output through the exact same `audio_write()` path this milestone
-already built.
+`play` also plays MP3s (MPEG-1/2 layer I-III), decoded by
+[minimp3](https://github.com/lieff/minimp3) -- a CC0 single-header
+decoder vendored unmodified in `userland/third_party/minimp3/` and
+compiled in `userland/mp3.c`. The format is sniffed from the file's first
+bytes (`RIFF` vs. an ID3v2 tag or MPEG frame sync), never the extension,
+so an MP3 named `.wav` plays too. The decoded rate still has to be
+44100 or 48000 Hz; a mono or stereo MP3 at any bitrate is fine.
+
+The file is streamed through a 16 KiB input buffer (a whole song won't
+fit under the 4 MiB brk cap), a leading ID3v2 tag is skipped outright
+(cover art can be hundreds of KiB), and the decoded frames feed the
+exact same volume/spectrum/`audio_write()` path WAV playback uses. The
+duration comes from a Xing/Info header when there is one (VBR files),
+otherwise from file size / bitrate (assumes CBR).
+
+This needed two kernel changes first, since minimp3 is float-based:
+
+- **Per-process FPU/SSE state** (`kernel/src/arch/x86_64/fpu.c`).
+  `fpu_init()` enables SSE (CR0/CR4), and `dispatch()` in
+  `arch/x86_64/usermode.c` eagerly `FXSAVE`s/`FXRSTOR`s each process's
+  registers around every dispatch -- including the nested one `wait()`
+  does. The kernel itself still builds with `-mno-sse -mno-80387`, so it
+  never touches those registers; userland now builds with SSE on.
+- **A 64 KiB user stack** (was 16 KiB): `mp3dec_decode_frame()` alone
+  keeps a ~16 KiB scratch struct on the stack.
+
+Volume and the spectrum stay integer-only -- they predate this and have
+no reason to change.
 
 ## Design notes
 

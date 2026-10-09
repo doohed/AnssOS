@@ -121,6 +121,10 @@ int process_fork(struct process *parent, struct interrupt_frame *frame) {
      * gives, a deliberate simplification); `as` gets replaced below with
      * a real clone, not the parent's own. */
     child->task = parent->task;
+    /* parent->task.fpu_state is only refreshed when the parent is
+     * switched away from -- the parent is mid-syscall right now, so its
+     * real x87/SSE state is what's live in the registers. */
+    fpu_save(child->task.fpu_state);
 
     /* Pipes (M19) are the one place that shallow copy needs a second
      * step: unlike a vnode, a pipe's open/closed state is real shared
@@ -227,6 +231,11 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size, int
     p->task.stdin_pipe = saved_stdin_pipe;
     p->task.stdout_pipe = saved_stdout_pipe;
     memcpy(p->task.kernel_resume, saved_kernel_resume, sizeof(saved_kernel_resume));
+    /* Load the new image's clean FPU state into the live registers now:
+     * dispatch() saves whatever is live into p->task.fpu_state the moment
+     * this dispatch unwinds, which would otherwise carry the old
+     * program's registers into the new one. */
+    fpu_restore(p->task.fpu_state);
     p->has_run = 0;           /* Next dispatch is a fresh launch at the new entry. */
     p->state = PROC_RUNNABLE; /* Was PROC_RUNNING; the caller is about to abandon this
                                * dispatch via return_to_kernel() -- without this, the

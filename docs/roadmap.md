@@ -560,6 +560,19 @@ virtio-gpu queue.
       what close-on-exec exists to solve, and this project doesn't have
       it. See [tile.md](tile.md).
 
+- [x] **M22 -- MP3 playback.** Per-process x87/SSE state: new
+      `arch/x86_64/fpu.c` enables SSE at boot, and `dispatch()` eagerly
+      `FXSAVE`s/`FXRSTOR`s each process's 512-byte state (in `struct
+      usertask`) around every dispatch, including `wait()`'s nested one;
+      `fork()` snapshots the parent's live registers and `exec()` loads a
+      clean state. The kernel still builds `-mno-sse`; userland no longer
+      does. `play` vendors minimp3 (CC0) and sniffs WAV vs. MP3 from the
+      file's bytes. User stacks grew 16 -> 64 KiB, since minimp3 keeps a
+      ~16 KiB scratch struct on the stack. Verified end to end with
+      QEMU's `wav` audiodev: the guest's decoded output correlates 0.9999
+      with the host's own decode of the same file, with no dropouts under
+      TCG. See [play.md](play.md#mp3).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
@@ -573,10 +586,9 @@ an `init` process/orphan reparenting, priority scheduling (Phase B is
 plain round-robin), an actual musl (or similar) port capable of
 building arbitrary third-party C source — the libc is still hand-
 written and intentionally small, proving the pattern rather than being
-generally reusable yet — FPU/SSE context-switch support (`XSAVE`/
-`FXSAVE` per-task; both the kernel and userland build with `-mno-sse
--mno-80387` today), and therefore real MP3 decoding (M17/M18 play WAV/
-PCM instead — see [play.md](play.md#why-wav-not-mp3)); general `dup2()`
+generally reusable yet — using FPU/SSE inside the kernel itself (M22
+gave userland per-process FPU state; kernel code stays `-mno-sse`), and
+`XSAVE`/AVX state beyond what `FXSAVE` covers; general `dup2()`
 and close-on-exec (M19-M21 use a narrower `use_as_stdio()` instead, and
 `tile.c`'s spawn logic closes inherited fds by hand — see
 [tile.md](tile.md#two-real-bugs-both-found-by-testing-not-review)); and

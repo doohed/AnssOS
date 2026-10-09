@@ -1,3 +1,4 @@
+#include "arch/x86_64/fpu.h"
 #include "arch/x86_64/gdt.h"
 #include "arch/x86_64/idt.h"
 #include "arch/x86_64/pic.h"
@@ -71,6 +72,8 @@ void kmain(void) {
     kprintf("GDT/TSS loaded.\n");
     idt_init();
     kprintf("IDT loaded.\n");
+    fpu_init();
+    kprintf("x87/SSE enabled for userland.\n");
 
     pmm_init();
 

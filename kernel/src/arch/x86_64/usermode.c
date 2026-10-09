@@ -23,6 +23,14 @@ static void dispatch(struct usertask *t, int fresh, uint64_t saved_rsp, int *exi
     struct addr_space caller_as = vmm_current_address_space();
     struct usertask *outer_task = current_task; /* M13: may itself be non-NULL -- see below. */
 
+    /* The x87/SSE registers hold outer_task's live state right now (if
+     * there is one -- it's mid-syscall, e.g. in wait(), and kernel code
+     * never touches them), so park it before loading `t`'s. */
+    if (outer_task != NULL) {
+        fpu_save(outer_task->fpu_state);
+    }
+    fpu_restore(t->fpu_state);
+
     tss_set_kernel_stack(t->kernel_stack_top);
     vmm_switch(&t->as);
     current_task = t;
@@ -43,6 +51,13 @@ static void dispatch(struct usertask *t, int fresh, uint64_t saved_rsp, int *exi
      * is still on the C stack -- when that nested dispatch returns here,
      * `current_task` must go back to reflecting *this* one, not NULL,
      * since this task hasn't actually exited/blocked itself. */
+    /* Whatever stopped `t` (exit, preemption, a blocking syscall, a
+     * fault) left its registers untouched, so they're still its own. */
+    fpu_save(t->fpu_state);
+    if (outer_task != NULL) {
+        fpu_restore(outer_task->fpu_state);
+    }
+
     current_task = outer_task;
     vmm_switch(&caller_as);
     *exit_status = kernel_resume_status;

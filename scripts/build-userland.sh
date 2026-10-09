@@ -20,9 +20,14 @@ cd "$(dirname "$0")/.."
 # are bare-metal x86_64 binaries; gcc gets nothing extra.
 CC="${CC:-cc}"
 LD="${LD:-ld}"
+# Unlike the kernel, userland may use x87/SSE: the kernel saves/restores
+# each process's FPU registers around every dispatch (kernel/src/arch/
+# x86_64/fpu.h) -- needed by play's MP3 decoder. userland/include holds
+# the minimal <string.h>/<stdlib.h> shims vendored code like minimp3
+# expects, backed by this libc.
 CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie
-    -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv -mno-80387 -mno-mmx
-    -mno-sse -mno-sse2 -mno-red-zone)
+    -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv -mno-red-zone
+    -I userland/include)
 if "$CC" --version 2>/dev/null | grep -qi clang; then
     CFLAGS+=(--target=x86_64-unknown-none)
 fi
@@ -55,7 +60,7 @@ build_program preempttest preempttest.c
 build_program termtest termtest.c
 build_program readdirtest readdirtest.c
 build_program scarf scarf.c
-build_program play play.c
+build_program play play.c mp3.c
 build_program pipetest pipetest.c
 build_program sh sh.c
 build_program tile tile.c

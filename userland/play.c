@@ -1,17 +1,18 @@
-/* An interactive WAV/PCM CLI player -- plays a playlist of files given
+/* An interactive WAV/MP3 CLI player -- plays a playlist of files given
  * on argv through the virtio-sound driver (kernel/src/drivers/virtio/
  * virtio_snd.c) via the audio_open()/audio_write()/audio_close()
  * syscalls, with poll_key() (a non-blocking keypress check -- see
  * kernel/src/exec/syscall.c) driving playback controls without ever
  * blocking the loop that feeds the device.
  *
- * Only PCM, 16-bit signed, mono/stereo, 44100/48000 Hz is supported --
- * exactly what virtio_snd_open() accepts. Volume scaling is
- * deliberately integer-only (`sample * volume / 100`): this kernel
- * builds with -mno-sse/-mno-80387 everywhere, so there is no FPU state
- * to safely use across a preemption in the first place. Real MP3
- * decoding is future work that needs that fixed first -- see
- * docs/roadmap.md.
+ * WAV files must be PCM, 16-bit signed, mono/stereo, 44100/48000 Hz --
+ * exactly what virtio_snd_open() accepts. MP3s (MPEG-1/2 layer I-III)
+ * are decoded with minimp3 (third_party/minimp3, compiled in mp3.c) and
+ * must also come out at 44100/48000 Hz. Which one a file is gets
+ * sniffed from its first bytes, not its extension. minimp3 is
+ * float-based, which works only because the kernel saves/restores each
+ * process's x87/SSE state (kernel/src/arch/x86_64/fpu.h); volume and
+ * the spectrum stay integer-only, as they predate that.
  *
  * The status display below reuses userland/scarf.c's exact ANSI/CSI
  * conventions (the only other AnssOS program that draws a fixed screen
@@ -24,6 +25,7 @@
  * box-drawing glyphs. */
 
 #include "libc.h"
+#include "third_party/minimp3/minimp3.h"
 
 #include <stdint.h>
 
@@ -243,6 +245,7 @@ struct player_state {
     const char *path;
     int track_idx, track_count;
     unsigned int rate, channels;
+    int mp3_kbps; /* 0 for WAV; an MP3's first audio frame's bitrate otherwise */
     unsigned int elapsed_sec, total_sec;
     int volume;
     int paused;
@@ -307,7 +310,13 @@ static void draw_screen(const struct player_state *st) {
     ab_int(&ab, (int)st->rate);
     ab_str(&ab, " Hz, ");
     ab_str(&ab, st->channels == 1 ? "mono" : "stereo");
-    ab_str(&ab, ", 16-bit PCM");
+    if (st->mp3_kbps > 0) {
+        ab_str(&ab, ", MP3 ");
+        ab_int(&ab, st->mp3_kbps);
+        ab_str(&ab, " kbps");
+    } else {
+        ab_str(&ab, ", 16-bit PCM");
+    }
     ab_str(&ab, "\x1b[K");
 
     int bar_w = bar_display_width();
@@ -380,16 +389,27 @@ static void draw_screen(const struct player_state *st) {
     free(ab.b);
 }
 
-/* ---------- WAV parsing ---------- */
+/* ---------- track sources (WAV parsing, MP3 decoding) ---------- */
 
-struct wav_info {
+/* One open track, whichever format it is -- play_track() only ever
+ * pulls 16-bit PCM out of it via src_read(). */
+struct track_src {
     int fd;
+    int is_mp3;
     unsigned int rate;
     unsigned int channels;
-    unsigned int data_bytes;
+    unsigned int total_sec;
+    int mp3_kbps;
+    unsigned int remaining; /* WAV only: PCM bytes left in the `data` chunk */
 };
 
 static unsigned char chunk_buf[CHUNK_BYTES];
+
+/* Per-track error messages, written out only after main()'s final
+ * screen clear -- printing them directly would have them wiped by that
+ * clear (or by the next track's redraw) before anyone could read them,
+ * leaving a bad file looking like it "played" and finished instantly. */
+static struct abuf errs = {NULL, 0, 0};
 
 static int read_u32le(int fd, unsigned int *out) {
     unsigned char b[4];
@@ -412,15 +432,9 @@ static int read_u16le(int fd, unsigned short *out) {
 
 /* Walks RIFF chunks looking for `fmt `/`data` rather than assuming a
  * fixed layout -- some WAV files carry a LIST/fact chunk in between.
- * On success, `out->fd` is left open with the file position at the
- * start of the PCM data. */
-static int parse_wav(const char *path, struct wav_info *out) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        printf("play: cannot open %s\n", path);
-        return -1;
-    }
-
+ * `fd` is positioned at the start of the file; on success it's left
+ * open, positioned at the start of the PCM data. Closes it on failure. */
+static int parse_wav(int fd, const char *path, struct track_src *out) {
     char magic[4];
     unsigned int riff_size;
     if (read(fd, magic, 4) != 4 || memcmp(magic, "RIFF", 4) != 0) {
@@ -465,10 +479,17 @@ static int parse_wav(const char *path, struct wav_info *out) {
             if (audio_format != 1 || bits_per_sample != 16 ||
                 (channels != 1 && channels != 2) ||
                 (sample_rate != 44100 && sample_rate != 48000)) {
-                printf(
-                    "play: %s: unsupported format (fmt=%d bits=%d ch=%d rate=%u) -- need "
-                    "PCM/16-bit/mono-or-stereo/44100-or-48000\n",
-                    path, audio_format, bits_per_sample, channels, sample_rate);
+                ab_str(&errs, "play: ");
+                ab_str(&errs, path);
+                ab_str(&errs, ": unsupported format (fmt=");
+                ab_int(&errs, audio_format);
+                ab_str(&errs, " bits=");
+                ab_int(&errs, bits_per_sample);
+                ab_str(&errs, " ch=");
+                ab_int(&errs, channels);
+                ab_str(&errs, " rate=");
+                ab_int(&errs, (int)sample_rate);
+                ab_str(&errs, ") -- need PCM/16-bit/mono-or-stereo/44100-or-48000\n");
                 close(fd);
                 return -1;
             }
@@ -494,9 +515,12 @@ static int parse_wav(const char *path, struct wav_info *out) {
             }
 
             out->fd = fd;
+            out->is_mp3 = 0;
             out->rate = sample_rate;
             out->channels = channels;
-            out->data_bytes = chunk_size;
+            out->total_sec = chunk_size / (sample_rate * channels * 2);
+            out->mp3_kbps = 0;
+            out->remaining = chunk_size;
             return 0;
         } else {
             lseek(fd, chunk_size, SEEK_CUR);
@@ -507,9 +531,230 @@ static int parse_wav(const char *path, struct wav_info *out) {
     }
 
 bad:
-    printf("play: %s: not a valid WAV file\n", path);
+    ab_str(&errs, "play: ");
+    ab_str(&errs, path);
+    ab_str(&errs, ": not a valid WAV file\n");
     close(fd);
     return -1;
+}
+
+/* MP3 input is streamed through a fixed buffer -- the whole file can't
+ * be read up front (a 4 MiB brk heap cap, see kernel/src/exec/
+ * syscall.c), and doesn't need to be. Refilled whenever it drops below
+ * half full, so minimp3 always sees well over the several consecutive
+ * frames it wants before trusting a sync word. One track plays at a
+ * time, so all of this is plain static state, reset by open_mp3(). */
+#define MP3_IN_BYTES (16 * 1024)
+
+static mp3dec_t mp3d;
+static unsigned char mp3_in[MP3_IN_BYTES];
+static int mp3_in_pos, mp3_in_len, mp3_eof;
+static const unsigned char *mp3_last_frame; /* the frame decode_mp3_frame() last decoded */
+static int mp3_last_frame_len;
+static mp3d_sample_t mp3_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+static unsigned int mp3_pcm_pos, mp3_pcm_len; /* bytes of mp3_pcm[] decoded / handed out */
+
+static int looks_like_mp3(const unsigned char *b) {
+    /* An ID3v2 tag, or a bare MPEG frame sync (11 set bits). */
+    return memcmp(b, "ID3", 3) == 0 || (b[0] == 0xFF && (b[1] & 0xE0) == 0xE0);
+}
+
+static unsigned int be32(const unsigned char *b) {
+    return ((unsigned int)b[0] << 24) | ((unsigned int)b[1] << 16) | ((unsigned int)b[2] << 8) |
+           (unsigned int)b[3];
+}
+
+/* Size of a leading ID3v2 tag (header, body, optional footer), 0 if
+ * none -- skipped outright rather than left for minimp3 to scan past,
+ * since embedded cover art can be hundreds of KiB. */
+static long id3v2_size(int fd) {
+    unsigned char h[10];
+    lseek(fd, 0, SEEK_SET);
+    if (read(fd, h, 10) != 10 || memcmp(h, "ID3", 3) != 0) {
+        return 0;
+    }
+    long body = ((long)(h[6] & 0x7F) << 21) | ((long)(h[7] & 0x7F) << 14) |
+                ((long)(h[8] & 0x7F) << 7) | (long)(h[9] & 0x7F); /* "synchsafe" */
+    return 10 + body + ((h[5] & 0x10) ? 10 : 0);
+}
+
+/* Decodes the next audio frame into mp3_pcm[], returning its sample
+ * count per channel -- 0 at end of stream. Frames minimp3 can't decode
+ * (junk between frames, a trailing ID3v1 tag) are skipped. */
+static int decode_mp3_frame(int fd, mp3dec_frame_info_t *info) {
+    for (;;) {
+        if (!mp3_eof && mp3_in_len - mp3_in_pos < MP3_IN_BYTES / 2) {
+            memmove(mp3_in, mp3_in + mp3_in_pos, (size_t)(mp3_in_len - mp3_in_pos));
+            mp3_in_len -= mp3_in_pos;
+            mp3_in_pos = 0;
+            while (mp3_in_len < MP3_IN_BYTES) {
+                long n = read(fd, mp3_in + mp3_in_len, (size_t)(MP3_IN_BYTES - mp3_in_len));
+                if (n <= 0) {
+                    mp3_eof = 1;
+                    break;
+                }
+                mp3_in_len += (int)n;
+            }
+        }
+
+        int avail = mp3_in_len - mp3_in_pos;
+        if (avail <= 0) {
+            return 0;
+        }
+        int samples = mp3dec_decode_frame(&mp3d, mp3_in + mp3_in_pos, avail, mp3_pcm, info);
+        if (info->frame_bytes == 0) {
+            /* No complete frame anywhere in what's buffered (at least half
+             * the buffer, unless at EOF) -- it's junk. Drop it. */
+            if (mp3_eof) {
+                return 0;
+            }
+            mp3_in_pos = mp3_in_len;
+            continue;
+        }
+        mp3_last_frame = mp3_in + mp3_in_pos + info->frame_offset;
+        mp3_last_frame_len = info->frame_bytes - info->frame_offset;
+        mp3_in_pos += info->frame_bytes;
+        if (samples > 0) {
+            return samples;
+        }
+    }
+}
+
+/* A VBR file's first frame is usually a silent Xing/Info header frame
+ * carrying the real frame count -- the only way to get an accurate
+ * duration without scanning the whole file. It sits right after the
+ * side info, whose size varies, so just look for the tag near the
+ * start of the frame. Returns the frame count, or 0 if there isn't one. */
+static unsigned int xing_frame_count(const unsigned char *frame, int len) {
+    for (int off = 4; off + 12 <= len && off < 48; off++) {
+        if (memcmp(frame + off, "Xing", 4) == 0 || memcmp(frame + off, "Info", 4) == 0) {
+            unsigned int flags = be32(frame + off + 4);
+            return (flags & 1) ? be32(frame + off + 8) : 0;
+        }
+    }
+    return 0;
+}
+
+/* Sets up streaming decode of the MP3 on `fd` and decodes its first
+ * frame (left pending in mp3_pcm[] for the first src_read()) -- the
+ * output rate/channel count aren't known until then. Closes `fd` on
+ * failure. */
+static int open_mp3(int fd, const char *path, struct track_src *out) {
+    long audio_start = id3v2_size(fd);
+    long file_end = lseek(fd, 0, SEEK_END);
+    lseek(fd, audio_start, SEEK_SET);
+
+    mp3dec_init(&mp3d);
+    mp3_in_pos = mp3_in_len = mp3_eof = 0;
+    mp3_pcm_pos = mp3_pcm_len = 0;
+
+    mp3dec_frame_info_t info;
+    int samples = decode_mp3_frame(fd, &info);
+    if (samples == 0) {
+        ab_str(&errs, "play: ");
+        ab_str(&errs, path);
+        ab_str(&errs, ": no decodable MP3 audio found\n");
+        close(fd);
+        return -1;
+    }
+    if (info.hz != 44100 && info.hz != 48000) {
+        ab_str(&errs, "play: ");
+        ab_str(&errs, path);
+        ab_str(&errs, ": unsupported MP3 sample rate ");
+        ab_int(&errs, info.hz);
+        ab_str(&errs, " Hz -- need 44100 or 48000\n");
+        close(fd);
+        return -1;
+    }
+
+    out->fd = fd;
+    out->is_mp3 = 1;
+    out->rate = (unsigned int)info.hz;
+    out->channels = (unsigned int)info.channels;
+    out->mp3_kbps = info.bitrate_kbps;
+    out->remaining = 0;
+
+    unsigned int xing_frames = xing_frame_count(mp3_last_frame, mp3_last_frame_len);
+    if (xing_frames > 0) {
+        out->total_sec = (unsigned int)((unsigned long)xing_frames * (unsigned long)samples /
+                                        (unsigned long)info.hz);
+    } else if (info.bitrate_kbps > 0 && file_end > audio_start) {
+        /* No Xing header: assume CBR, so duration is just size/bitrate. */
+        out->total_sec = (unsigned int)((file_end - audio_start) / (info.bitrate_kbps * 125L));
+    } else {
+        out->total_sec = 0;
+    }
+
+    mp3_pcm_len = (unsigned int)(samples * info.channels) * 2u;
+    return 0;
+}
+
+/* Opens `path` and sniffs whether it's a WAV or an MP3. */
+static int open_track(const char *path, struct track_src *out) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        ab_str(&errs, "play: cannot open ");
+        ab_str(&errs, path);
+        ab_str(&errs, "\n");
+        return -1;
+    }
+    unsigned char magic[4];
+    if (read(fd, magic, 4) == 4) {
+        lseek(fd, 0, SEEK_SET);
+        if (memcmp(magic, "RIFF", 4) == 0) {
+            return parse_wav(fd, path, out);
+        }
+        if (looks_like_mp3(magic)) {
+            return open_mp3(fd, path, out);
+        }
+    }
+    ab_str(&errs, "play: ");
+    ab_str(&errs, path);
+    ab_str(&errs, ": not a WAV or MP3 file\n");
+    close(fd);
+    return -1;
+}
+
+/* Fills `buf` with up to `max` bytes (a multiple of the frame size) of
+ * 16-bit PCM from `src`. Returns the byte count, 0 at end of track. */
+static long src_read(struct track_src *src, unsigned char *buf, unsigned int max) {
+    if (!src->is_mp3) {
+        unsigned int frame_bytes = src->channels * 2;
+        unsigned int want = src->remaining < max ? src->remaining : max;
+        want -= want % frame_bytes;
+        if (want == 0) {
+            return 0;
+        }
+        long n = read(src->fd, buf, want);
+        if (n <= 0) {
+            return 0;
+        }
+        src->remaining -= (unsigned int)n;
+        return n;
+    }
+
+    while (mp3_pcm_pos == mp3_pcm_len) {
+        mp3dec_frame_info_t info;
+        int samples = decode_mp3_frame(src->fd, &info);
+        if (samples == 0) {
+            return 0;
+        }
+        /* A mid-stream rate/channel change (rare, but legal MP3) can't
+         * be followed without reopening the audio stream -- skip any
+         * such frame rather than play it at the wrong speed. */
+        if ((unsigned int)info.hz != src->rate || (unsigned int)info.channels != src->channels) {
+            continue;
+        }
+        mp3_pcm_pos = 0;
+        mp3_pcm_len = (unsigned int)(samples * info.channels) * 2u;
+    }
+    unsigned int n = mp3_pcm_len - mp3_pcm_pos;
+    if (n > max) {
+        n = max;
+    }
+    memcpy(buf, (unsigned char *)mp3_pcm + mp3_pcm_pos, n);
+    mp3_pcm_pos += n;
+    return (long)n;
 }
 
 static short clamp16(int v) {
@@ -536,20 +781,22 @@ static void apply_volume(unsigned char *buf, unsigned int bytes, int volume) {
 /* Returns 1 if the user quit ('q'), 0 on normal end-of-track/'n' skip,
  * -1 if the file couldn't be opened or parsed. */
 static int play_track(const char *path, int track_idx, int track_count, int *volume) {
-    struct wav_info w;
-    if (parse_wav(path, &w) != 0) {
+    struct track_src w;
+    if (open_track(path, &w) != 0) {
         return -1;
     }
 
     if (audio_open(w.rate, w.channels) != 0) {
-        printf("play: audio_open failed (rate=%u channels=%u)\n", w.rate, w.channels);
+        ab_str(&errs, "play: audio_open failed (rate=");
+        ab_int(&errs, (int)w.rate);
+        ab_str(&errs, " channels=");
+        ab_int(&errs, (int)w.channels);
+        ab_str(&errs, ")\n");
         close(w.fd);
         return -1;
     }
 
     unsigned int bytes_per_sec = w.rate * w.channels * 2;
-    unsigned int total_sec = bytes_per_sec ? w.data_bytes / bytes_per_sec : 0;
-    unsigned int remaining = w.data_bytes;
     unsigned int played_bytes = 0;
     int paused = 0;
     int quit = 0;
@@ -561,14 +808,15 @@ static int play_track(const char *path, int track_idx, int track_count, int *vol
         .track_count = track_count,
         .rate = w.rate,
         .channels = w.channels,
+        .mp3_kbps = w.mp3_kbps,
         .elapsed_sec = 0,
-        .total_sec = total_sec,
+        .total_sec = w.total_sec,
         .volume = *volume,
         .paused = 0,
     };
     draw_screen(&st);
 
-    while (remaining > 0) {
+    for (;;) {
         int dirty = 0;
         for (;;) {
             int key = poll_key();
@@ -607,14 +855,7 @@ static int play_track(const char *path, int track_idx, int track_count, int *vol
             break;
         }
 
-        unsigned int frame_bytes = w.channels * 2;
-        unsigned int want = remaining < CHUNK_BYTES ? remaining : CHUNK_BYTES;
-        want -= want % frame_bytes;
-        if (want == 0) {
-            break;
-        }
-
-        long n = read(w.fd, chunk_buf, want);
+        long n = src_read(&w, chunk_buf, CHUNK_BYTES);
         if (n <= 0) {
             break;
         }
@@ -627,7 +868,6 @@ static int play_track(const char *path, int track_idx, int track_count, int *vol
         }
 
         played_bytes += (unsigned int)n;
-        remaining -= (unsigned int)n;
 
         /* Redrawn every chunk now, not just once/sec -- the spectrum
          * needs to actually move with the music. (elapsed_sec is folded
@@ -655,7 +895,7 @@ static int raw_mode_on(struct termios *orig) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("usage: play <file.wav> [file2.wav ...]\n");
+        printf("usage: play <file.wav|file.mp3> [more files ...]\n");
         exit(1);
     }
 
@@ -678,6 +918,9 @@ int main(int argc, char **argv) {
 
     write(1, "\x1b[0m\x1b[2J\x1b[H\x1b[?25h", 18);
     tcsetattr(0, TCSANOW, &orig);
+    if (errs.len > 0) {
+        write(1, errs.b, errs.len);
+    }
     printf("play: done\n");
-    exit(0);
+    exit(errs.len > 0 ? 1 : 0);
 }

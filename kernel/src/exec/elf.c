@@ -49,9 +49,11 @@ struct __attribute__((packed)) elf64_phdr {
  * reasonably-linked non-PIE binary's own segments (those typically start
  * around 0x400000). */
 #define USER_STACK_TOP 0x0000700000000000ull
-#define USER_STACK_PAGES 4 /* 16 KiB */
+/* 64 KiB: minimp3's mp3dec_decode_frame() alone (userland/play.c) puts a
+ * ~16 KiB scratch struct on the stack -- the old 16 KiB overflowed. */
+#define USER_STACK_PAGES 16
 
-/* Caps on the argument vector. Generous next to a 16 KiB stack (16 args
+/* Caps on the argument vector. Generous next to a 64 KiB stack (16 args
  * of 128 bytes is 2 KiB), and bounded so a caller can't push the initial
  * stack down past the pages actually mapped for it. */
 #define MAX_ARGS 16
@@ -223,5 +225,6 @@ int elf_load(const uint8_t *image, size_t image_size, int argc, const char *cons
     out->termios.c_lflag = ICANON | ECHO; /* Today's actual default behavior, made explicit. */
     out->termios.c_cc[VMIN] = 1;
     out->termios.c_cc[VTIME] = 0;
+    fpu_state_init(out->fpu_state);
     return 0;
 }

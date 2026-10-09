@@ -129,7 +129,7 @@ space: the stack pages come from a single `pmm_alloc_pages()` run, so
 they are physically contiguous and reachable without switching `CR3`.
 
 Arguments are capped at 16 of 128 bytes each, bounds-checked against the
-16 KiB user stack.
+64 KiB user stack.
 
 ## Terminal handling
 
