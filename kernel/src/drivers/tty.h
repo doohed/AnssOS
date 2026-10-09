@@ -29,7 +29,7 @@ struct k_termios {
 
 /* Linux's real TIOCGWINSZ request value and struct winsize layout, same
  * free-compat reasoning as everything else here. A full-screen program
- * (userland/scarf.c) can't lay anything out without knowing how big the
+ * (scarf, userland/rust/scarf/) can't lay anything out without knowing how big the
  * terminal is -- see exec/syscall.c's sys_ioctl_impl(), which answers
  * from console/fbconsole.c's actual glyph grid when the framebuffer
  * console is up. ws_xpixel/ws_ypixel are reported as 0, which is what

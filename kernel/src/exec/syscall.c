@@ -153,7 +153,7 @@ static int64_t sys_open_impl(const char *path, int flags) {
      * this, sys_write_impl() only ever grows a file (it writes at an
      * offset and extends), so saving a file that got *shorter* would
      * leave the tail of the previous version behind -- which any editor
-     * (userland/scarf.c) does constantly. Only the length is reset; the
+     * (scarf, userland/rust/scarf/) does constantly. Only the length is reset; the
      * allocation is left alone for the coming writes to reuse. */
     if ((flags & O_TRUNC) && node->type == VNODE_FILE && access_mode == O_WRONLY) {
         node->size = 0;
@@ -288,7 +288,7 @@ static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
         const char *bytes = buf;
         /* One write() from userland becomes exactly one virtio-gpu flush
          * rather than one per character. A full-screen redraw
-         * (userland/scarf.c) is thousands of bytes, and a virtqueue round
+         * (scarf, userland/rust/scarf/) is thousands of bytes, and a virtqueue round
          * trip each was slow enough to make the editor unusable -- see
          * fbconsole_begin_batch(). Purely a batching change: the bytes,
          * and the serial output, are identical either way. */

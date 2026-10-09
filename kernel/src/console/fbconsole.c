@@ -185,7 +185,7 @@ static void handle_csi(char final) {
             }
             break;
         }
-        case 'm': { /* SGR -- only reverse video, which is how userland/scarf.c
+        case 'm': { /* SGR -- only reverse video, which is how scarf (userland/rust/scarf/)
                      * draws its cursor (portable: real terminals do this too,
                      * so the serial path renders identically). No colour
                      * support; those parameters are ignored, not an error. */

@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust for userland/rust/ (play): a minimal stable toolchain plus the bare-metal
+# Rust for userland/rust/ (play, scarf): a minimal stable toolchain plus the bare-metal
 # x86_64 target. On an arm64 host this is still a native toolchain --
 # x86_64-unknown-none is a cross target, like clang's --target.
 ENV RUSTUP_HOME=/usr/local/rustup \

@@ -1,0 +1,10 @@
+[package]
+name = "anssos-tui"
+description = "ratatui support for AnssOS: a backend for the framebuffer console"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anssos.workspace = true
+ratatui.workspace = true

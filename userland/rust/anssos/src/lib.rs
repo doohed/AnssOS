@@ -14,11 +14,20 @@
 
 #![no_std]
 
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
-use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use core::fmt;
 
-pub const O_RDONLY: c_int = 0;
+pub use alloc::ffi::CString;
+
+const O_RDONLY: c_int = 0;
+const O_WRONLY: c_int = 1;
+const O_CREAT: c_int = 0x40;
+const O_TRUNC: c_int = 0x200;
 pub const SEEK_SET: c_int = 0;
 pub const SEEK_CUR: c_int = 1;
 pub const SEEK_END: c_int = 2;
@@ -42,6 +51,20 @@ pub struct Termios {
     c_cc: [u8; 19],
 }
 
+/// userland/libc.h's struct dirent -- one entry per readdir().
+#[repr(C)]
+struct Dirent {
+    d_type: u8,
+    d_name: [c_char; 64],
+}
+const DT_DIR: u8 = 4;
+
+/// Opaque: the libc's DIR.
+#[repr(C)]
+struct Dir {
+    _fd: c_int,
+}
+
 #[repr(C)]
 struct Winsize {
     ws_row: u16,
@@ -52,10 +75,18 @@ struct Winsize {
 
 unsafe extern "C" {
     fn write(fd: c_int, buf: *const c_void, len: c_ulong) -> c_long;
-    fn read(fd: c_int, buf: *mut c_void, len: c_ulong) -> c_long;
+    #[link_name = "read"]
+    fn c_read(fd: c_int, buf: *mut c_void, len: c_ulong) -> c_long;
     fn open(path: *const c_char, flags: c_int) -> c_int;
     fn close(fd: c_int) -> c_int;
     fn lseek(fd: c_int, offset: c_long, whence: c_int) -> c_long;
+    #[link_name = "chdir"]
+    fn c_chdir(path: *const c_char) -> c_int;
+    #[link_name = "getcwd"]
+    fn c_getcwd(buf: *mut c_char, size: c_ulong) -> c_int;
+    fn opendir(path: *const c_char) -> *mut Dir;
+    fn readdir(dir: *mut Dir) -> *mut Dirent;
+    fn closedir(dir: *mut Dir) -> c_int;
     fn ioctl(fd: c_int, request: c_ulong, argp: *mut c_void) -> c_long;
     fn tcgetattr(fd: c_int, t: *mut Termios) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, t: *const Termios) -> c_int;
@@ -82,6 +113,14 @@ pub fn write_all(fd: c_int, mut bytes: &[u8]) {
 
 pub fn exit(code: i32) -> ! {
     unsafe { c_exit(code) }
+}
+
+/// Blocking read of one byte from stdin -- in raw mode (RawMode), one
+/// keypress. None on EOF or error.
+pub fn read_key() -> Option<u8> {
+    let mut b = 0u8;
+    let n = unsafe { c_read(0, (&raw mut b).cast(), 1) };
+    if n == 1 { Some(b) } else { None }
 }
 
 /// Non-blocking keypress check: the key's byte, or None if none is ready.
@@ -124,20 +163,82 @@ impl Drop for RawMode {
     }
 }
 
+/// Changes the working directory. Fails on anything that isn't a
+/// directory -- which makes it the reliable "is this a directory?" test,
+/// since open() succeeds on directories too.
+pub fn chdir(path: &CStr) -> bool {
+    unsafe { c_chdir(path.as_ptr()) == 0 }
+}
+
+/// The working directory as an absolute, canonical path.
+pub fn getcwd() -> Option<String> {
+    let mut buf = [0 as c_char; 256];
+    if unsafe { c_getcwd(buf.as_mut_ptr(), buf.len() as c_ulong) } != 0 {
+        return None;
+    }
+    let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    s.to_str().ok().map(String::from)
+}
+
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// Lists a directory's entries, in the VFS's own order. None if it
+/// can't be opened.
+pub fn read_dir(path: &CStr) -> Option<Vec<DirEntry>> {
+    let dir = unsafe { opendir(path.as_ptr()) };
+    if dir.is_null() {
+        return None;
+    }
+    let mut entries = Vec::new();
+    loop {
+        let e = unsafe { readdir(dir) };
+        if e.is_null() {
+            break;
+        }
+        let e = unsafe { &*e };
+        let name = unsafe { CStr::from_ptr(e.d_name.as_ptr()) };
+        entries.push(DirEntry { name: String::from_utf8_lossy(name.to_bytes()).into(), is_dir: e.d_type == DT_DIR });
+    }
+    unsafe { closedir(dir) };
+    Some(entries)
+}
+
 /// An open file descriptor, closed on drop.
 pub struct File(c_int);
 
 impl File {
-    /// `path` must be NUL-terminated (it comes straight from argv).
-    pub fn open(path: *const c_char) -> Option<File> {
-        let fd = unsafe { open(path, O_RDONLY) };
+    pub fn open(path: &CStr) -> Option<File> {
+        let fd = unsafe { open(path.as_ptr(), O_RDONLY) };
+        if fd < 0 { None } else { Some(File(fd)) }
+    }
+
+    /// Opens for writing, creating the file or truncating it to empty.
+    /// O_TRUNC matters: the kernel's write path only ever extends a file,
+    /// so without it a shorter save would leave the old tail behind.
+    pub fn create(path: &CStr) -> Option<File> {
+        let fd = unsafe { open(path.as_ptr(), O_WRONLY | O_CREAT | O_TRUNC) };
         if fd < 0 { None } else { Some(File(fd)) }
     }
 
     /// Reads up to `buf.len()` bytes; 0 at end of file or on error.
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
-        let n = unsafe { read(self.0, buf.as_mut_ptr().cast(), buf.len() as c_ulong) };
+        let n = unsafe { c_read(self.0, buf.as_mut_ptr().cast(), buf.len() as c_ulong) };
         if n <= 0 { 0 } else { n as usize }
+    }
+
+    /// Writes all of `bytes`; false if the write fell short.
+    pub fn write_all(&mut self, mut bytes: &[u8]) -> bool {
+        while !bytes.is_empty() {
+            let n = unsafe { write(self.0, bytes.as_ptr().cast(), bytes.len() as c_ulong) };
+            if n <= 0 {
+                return false;
+            }
+            bytes = &bytes[n as usize..];
+        }
+        true
     }
 
     /// Fills as much of `buf` as the file has left; returns the count.

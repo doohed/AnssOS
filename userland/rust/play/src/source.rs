@@ -14,7 +14,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_int};
+use core::ffi::{CStr, c_int};
 
 use anssos::{File, SEEK_CUR, SEEK_END, SEEK_SET};
 
@@ -33,9 +33,9 @@ pub enum Source {
 }
 
 impl Source {
-    /// Opens `path` (NUL-terminated, from argv) and sniffs its format.
-    /// `name` is only for error messages.
-    pub fn open(path: *const c_char, name: &str) -> Result<(Source, TrackInfo), String> {
+    /// Opens `path` and sniffs its format. `name` is only for error
+    /// messages.
+    pub fn open(path: &CStr, name: &str) -> Result<(Source, TrackInfo), String> {
         let mut file = File::open(path).ok_or_else(|| format!("cannot open {name}"))?;
         let mut magic = [0u8; 4];
         if file.read_full(&mut magic) == 4 {

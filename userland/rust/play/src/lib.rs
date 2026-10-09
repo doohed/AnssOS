@@ -21,7 +21,6 @@
 
 extern crate alloc;
 
-mod backend;
 mod source;
 mod spectrum;
 mod ui;
@@ -30,9 +29,8 @@ use alloc::string::String;
 use core::ffi::{CStr, c_char, c_int};
 use core::fmt::Write;
 
-use ratatui::Terminal;
+use anssos_tui::Term;
 
-use backend::AnssBackend;
 use source::Source;
 use spectrum::Spectrum;
 
@@ -47,7 +45,8 @@ enum Outcome {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
-    let args: alloc::vec::Vec<*const c_char> = (1..argc as usize).map(|i| unsafe { *argv.add(i) }).collect();
+    let args: alloc::vec::Vec<&CStr> =
+        (1..argc as usize).map(|i| unsafe { CStr::from_ptr(*argv.add(i)) }).collect();
     if args.is_empty() {
         anssos::write_all(1, b"usage: play <file.wav|file.mp3> [more files ...]\n");
         return 1;
@@ -58,9 +57,7 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
         return 1;
     };
 
-    let mut terminal = Terminal::new(AnssBackend::new()).unwrap_or_else(|e| match e {});
-    let _ = terminal.hide_cursor();
-    let _ = terminal.clear();
+    let mut terminal = anssos_tui::init();
 
     // Per-track errors are reported only after the final screen clear --
     // printed right away, the next redraw (or that clear) would wipe them
@@ -68,7 +65,7 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
     let mut errors = String::new();
     let mut volume = 100;
     for (i, &path) in args.iter().enumerate() {
-        let name = unsafe { CStr::from_ptr(path) }.to_str().unwrap_or("?");
+        let name = path.to_str().unwrap_or("?");
         match play_track(&mut terminal, path, name, i + 1, args.len(), &mut volume) {
             Ok(Outcome::Quit) => break,
             Ok(Outcome::Finished) => {}
@@ -78,7 +75,7 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
         }
     }
 
-    anssos::write_all(1, b"\x1b[0m\x1b[2J\x1b[H\x1b[?25h");
+    anssos_tui::restore();
     drop(raw_mode);
     anssos::write_all(1, errors.as_bytes());
     anssos::write_all(1, b"play: done\n");
@@ -86,8 +83,8 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
 }
 
 fn play_track(
-    terminal: &mut Terminal<AnssBackend>,
-    path: *const c_char,
+    terminal: &mut Term,
+    path: &CStr,
     name: &str,
     track_idx: usize,
     track_count: usize,
@@ -104,7 +101,7 @@ fn play_track(
     let mut spectrum = Spectrum::new();
     let mut chunk = [0u8; CHUNK_BYTES];
 
-    let draw = |terminal: &mut Terminal<AnssBackend>, spectrum: &Spectrum, paused: bool, volume: i32, played: u64| {
+    let draw = |terminal: &mut Term, spectrum: &Spectrum, paused: bool, volume: i32, played: u64| {
         let view = ui::View {
             name,
             track_idx,

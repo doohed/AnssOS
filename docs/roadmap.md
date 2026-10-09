@@ -580,7 +580,8 @@ virtio-gpu queue.
       staticlib for `x86_64-unknown-none` that also holds its own C
       (`c/mp3.c`) and vendored minimp3 (`vendor/`). `build-userland.sh`
       builds the workspace and links each program with `crt0.o` and the
-      C libc. Ratatui 0.30 runs without std; `play/src/backend.rs` is a
+      C libc. Ratatui 0.30 runs without std; `play/src/backend.rs` (since
+      moved to the shared `tui/` crate, M24) is a
       custom `Backend` that emits only the console's ANSI subset and
       ASCII symbols. **The console quirk this found:** writing the
       bottom-right cell wraps the cursor immediately and scrolls the
@@ -588,6 +589,17 @@ virtio-gpu queue.
       Verified the same way as M22: the guest's decoded output
       correlates 0.9999 with the reference, with no dropouts under TCG.
       See [play.md](play.md#design-notes).
+
+- [x] **M24 -- `scarf` rewritten in Rust + ratatui.** `userland/rust/scarf/`
+      ports the C editor with identical keys and behavior, split into
+      buffer/sidebar/editor/ui modules. The ratatui backend moved out of
+      `play` into a shared crate, `anssos-tui` (`userland/rust/tui/`),
+      and the `anssos` runtime gained file writing, `chdir`/`getcwd`
+      and directory listing. Ratatui's frame diffing replaces the C
+      version's hand-kept sidebar-dirty tracking. New look in `play`'s
+      style: solid focused-pane titles, a solid divider, a status bar
+      with a mode chip, line numbers, and double-spaced lines on tall
+      consoles (the 8x8 font has no leading). See [scarf.md](scarf.md).
 
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15

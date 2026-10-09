@@ -43,6 +43,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
+use anssos_tui::solid;
+
 use crate::source::TrackInfo;
 use crate::spectrum::{MAX_LEVEL, N_BANDS};
 
@@ -72,9 +74,6 @@ pub struct View<'a> {
     pub peaks: &'a [u64; N_BANDS],
 }
 
-fn solid() -> Style {
-    Style::new().reversed()
-}
 
 pub fn render(frame: &mut Frame, v: &View) {
     let area = frame.area();

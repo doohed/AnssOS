@@ -17,7 +17,7 @@
  * read never blocks (see kernel/src/exec/pipe.h's own comment on why:
  * ring-0 spins can't yield to the process that would produce the data).
  * So raw mode is set unconditionally at startup (own echo, own
- * backspace handling, like play (userland/rust/play/) and scarf.c already do) and
+ * backspace handling, like play and scarf (userland/rust/) already do) and
  * read_line() below reads one byte at a time in a loop that treats a 0
  * return as "no data yet, keep looping" -- a ring-3 spin, safely
  * preemptible, letting sibling pane processes actually run between

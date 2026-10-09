@@ -63,7 +63,6 @@ build_program forkchild forkchild.c
 build_program preempttest preempttest.c
 build_program termtest termtest.c
 build_program readdirtest readdirtest.c
-build_program scarf scarf.c
 # Rust programs live in one Cargo workspace, userland/rust/ (see its
 # Cargo.toml): each is a no_std staticlib exporting the `main` crt0
 # calls, linked here with the C libc (and any C sources of its own) like
@@ -76,6 +75,7 @@ cargo build --release --quiet \
 RUST_OUT=rust/target/x86_64-unknown-none/release
 
 build_program play rust/play/c/mp3.c "$RUST_OUT/libplay.a"
+build_program scarf "$RUST_OUT/libscarf.a"
 build_program pipetest pipetest.c
 build_program sh sh.c
 build_program tile tile.c

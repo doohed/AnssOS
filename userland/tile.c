@@ -4,7 +4,7 @@
  *
  * Deliberately bounded scope (see the plan this was built from):
  *   - a fixed 1/2x1/2x2 grid (up to 4 panes), not a dynamic resizable
- *     tree -- that's exactly the feature userland/scarf.c tried and
+ *     tree -- that's exactly the feature scarf (then userland/scarf.c) tried and
  *     reverted (docs/scarf.md), and fixed-grid sidesteps it entirely.
  *   - each pane's "virtual terminal" is scrollback-only, no ANSI
  *     parsing: sh never emits cursor-addressing escapes (it prints text
@@ -17,7 +17,7 @@
  *     near-continuous redraws to look reactive.
  *
  * Reuses the same abuf/ab_str/ab_int/ab_goto output-buffer conventions
- * userland/scarf.c and play (userland/rust/play/) already established (one
+ * scarf and play (userland/rust/) already established (one
  * write() per redraw, every line positioned explicitly with
  * ESC[row;colH) rather than inventing new ones -- see either of their
  * own comments on why. Since every pane's cell is always written at a

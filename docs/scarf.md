@@ -1,8 +1,10 @@
 # scarf
 
 A small modal text editor with vim keybindings and a file-explorer
-sidebar. It lives in `userland/scarf.c` and is the first AnssOS program
-that draws a full screen rather than scrolling log lines past.
+sidebar, written in Rust with [ratatui](https://ratatui.rs)
+(`userland/rust/scarf/`). It was the first AnssOS program to draw a full
+screen rather than scroll log lines past; it started as C
+(`userland/scarf.c`) and was ported to Rust with identical behavior.
 
 ```
 AnssOS:/> scarf                  # sidebar on the current directory
@@ -14,6 +16,47 @@ A directory argument opens the sidebar there; a file argument opens
 straight into the editor. With no argument it starts in whatever
 directory the shell was in, since a launched process inherits the
 shell's cwd.
+
+## Screen
+
+```
+ /docs/                 # notes.txt [+]                         <- pane titles: the focused
+                        #                                          one is a solid bar
+                        #
+   ../                  #   1 hello world
+ #######################
+ ## sub/ ###############    2 second line                          <- sidebar selection
+ #######################
+   notes.txt            #   3
+ NORMAL                                          ln 2/40  col 5  <- status bar
+ :w                                                              <- messages / command line
+```
+
+(`#` stands for a solid cell.) It uses the same visual language as
+[play](play.md#screen). The console's only style is reverse video, and a
+reverse-video space is a solid cell, so these are all solid:
+
+- the focused pane's title;
+- the divider (a solid column, because `font8x8_basic` draws `|` as a
+  broken, dashed bar);
+- the status bar, with the mode chip (`NORMAL`, `INSERT`, `COMMAND`,
+  `FILES`) cut out of it in normal video;
+- the cursor;
+- the cursor line's number.
+
+Focus shows twice: the focused pane's title goes solid, and the sidebar's
+selection is a full solid band only while the sidebar has focus. When the
+editor has focus, the sidebar marks its selection with `>` instead.
+
+The 8×8 font has no leading, so adjacent text lines touch. On a console
+of 50 rows or more (every resolution `run-qemu.sh` offers), text and
+sidebar lines are double-spaced. The sidebar selection then also takes
+the blank rows above and below its entry, so its text sits centred in a
+3-row band. A smaller console (the 80×24 fallback without virtio-gpu)
+stays single-spaced rather than halving what fits.
+
+Bytes outside printable ASCII show as `?`, and a tab shows as one space;
+the console can't display anything else.
 
 ## Keys
 
@@ -65,43 +108,55 @@ column 0 joins with the previous line, and `Tab` inserts four spaces.
 
 ## Design notes
 
-**The cursor is drawn as a reverse-video cell** (SGR 7) rather than the
-terminal's own cursor, because that renders identically on the
-framebuffer console and over serial. The real cursor is hidden with
-`ESC[?25l` on entry and restored on exit, along with normal video and a
-cleared screen -- otherwise the shell prompt inherits reverse video and
-an invisible cursor.
+**Structure.** scarf is a member of the `userland/rust/` Cargo workspace
+(see [play.md](play.md#design-notes) for how Rust programs are built and
+linked). It's a `no_std` staticlib split into:
 
-**Every line is positioned explicitly** with `ESC[row;colH` rather than
-separated by `\r\n`. A line that exactly fills the terminal width
-auto-wraps to the next row, and a trailing newline after it would then
-advance a *second* time -- drifting the whole frame down one row per
-redraw until the screen scrolls and leaves a stale duplicate behind.
-That bug was found by screendumping the framebuffer and noticing the
-message line rendered twice.
+- `buffer.rs`: the text (lines of bytes), loading and saving;
+- `sidebar.rs`: one directory's listing and the selection;
+- `editor.rs`: modes, motions, edits and the `:` command line;
+- `ui.rs`: drawing.
+
+It shares the `anssos` runtime (libc FFI: files, `chdir`/`getcwd`,
+directory listing, raw mode) and `anssos-tui` (the ratatui console
+backend) with `play`.
+
+**The cursor is drawn as a solid cell** rather than the terminal's own
+cursor, because that renders identically on the framebuffer console and
+over serial. `anssos_tui::init()` hides the real cursor, and `restore()`
+brings back normal video, a cleared screen and a visible cursor on exit.
+Otherwise the shell prompt would inherit reverse video and an invisible
+cursor.
+
+**Ratatui does the redraw bookkeeping.** The C version positioned every
+line explicitly, cleared with `ESC[K`, and repainted the sidebar only when
+a `sidebar_dirty` flag said so, all to keep the bytes per keystroke down.
+Ratatui diffs each frame against the previous one and sends only the
+cells that changed, so none of that is needed. The backend
+(`userland/rust/tui/src/backend.rs`) still positions every run of cells
+explicitly, and still reports one row fewer than the console has, because
+writing the bottom-right cell would scroll the screen.
 
 **Directory detection uses `chdir()`, not `opendir()`.** `opendir()` is
 just `open(path, O_RDONLY)`, which succeeds on a regular file too, so it
 cannot tell the two apart. `chdir()` rejects anything that is not a
-directory, and canonicalises as a side effect -- which is why `scarf .`
+directory and canonicalises as a side effect, which is why `scarf .`
 shows `/docs` in the header rather than the literal `/docs/.`.
 
-**Window splits were tried and removed.** Tiled panes cannot use `ESC[K`
-to clear a line (it would erase the pane beside it), so every cell had
-to be padded with spaces -- roughly 20 KB of output per keystroke. The
-current layout is deliberately one editor pane reaching the right edge,
-so it clears with `ESC[K` and writes only as many bytes as the text
-actually occupies.
+**Saving re-reads the sidebar,** so a file created with `:w` appears in
+the listing straight away.
+
+**Window splits were tried and removed** in the C version. Tiled panes
+couldn't use `ESC[K` to clear a line (it would erase the pane beside it),
+so every cell had to be padded, roughly 20 KB of output per keystroke.
+With ratatui's diffing that particular cost is gone, so splits would be
+cheaper to revisit now.
 
 ## Performance
 
-Two things make redraws expensive, and only one of them is fixed:
-
-**Byte count (addressed).** The editor pane clears with `ESC[K` instead
-of padding. The sidebar still has to pad (the editor is to its right),
-so it is redrawn *only when it changes* -- not while you are typing.
-Measured around 2.4 KB per keystroke, against ~16 KB minimum for the
-padded-everything approach.
+**Bytes per keystroke:** handled by ratatui's diffing (see above). Typing
+a character sends that cell, the cursor cell and the status bar's
+position, not the screen.
 
 **Framebuffer flush (not addressed).** `virtio_gpu_flush()` transfers
 the *entire* framebuffer -- 4 MB at 1280x800 -- with two synchronous
@@ -130,5 +185,6 @@ landed alongside it:
 ## Not supported
 
 Visual mode, registers/yank/put, undo, and search. Deliberately, to keep
-the thing reviewable. The libc it is built on has no `realloc` and no
-`snprintf`, so it carries small local substitutes for both.
+the thing reviewable. Arrow keys aren't handled either: the virtio
+keymap (`kernel/src/drivers/virtio/virtio_input.c`) only covers key
+codes up to 61, so the arrows (103-108) never produce a byte.

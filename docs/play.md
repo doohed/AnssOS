@@ -117,8 +117,9 @@ userland/rust/
   Cargo.toml          workspace: members, shared deps, release profile
   .cargo/config.toml  target = x86_64-unknown-none
   anssos/             runtime crate shared by every Rust program
+  tui/                anssos-tui: the ratatui console backend + setup/teardown
   play/
-    src/              the player (lib.rs, backend.rs, source.rs, ...)
+    src/              the player (lib.rs, source.rs, spectrum.rs, ui.rs)
     c/mp3.c           play's own C: compiles minimp3's implementation
     vendor/minimp3/   minimp3, vendored unmodified (CC0)
 ```
@@ -150,7 +151,8 @@ plus one `build_program` line in `build-userland.sh`.
 
 **Ratatui without std.** Ratatui 0.30 supports `no_std`
 (`default-features = false`; it needs `alloc`). Its built-in backends
-(crossterm and the rest) need std, so `play/src/backend.rs` implements
+(crossterm and the rest) need std, so `tui/src/backend.rs` (the
+`anssos-tui` crate, shared with [scarf](scarf.md)) implements
 `ratatui::backend::Backend` for the AnssOS console. It queues output into
 one buffer and writes it with a single `write()` per frame. It emits only
 the escapes the console understands: CUP, ED/EL, and SGR 7/0. CUP is

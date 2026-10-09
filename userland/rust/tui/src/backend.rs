@@ -6,8 +6,8 @@
 //! emits: CUP (`ESC[row;colH`), ED/EL (`ESC[nJ`, `ESC[nK`) and SGR
 //! reverse video (`ESC[7m`/`ESC[0m`) -- no colors. Its font
 //! (font8x8_basic) is ASCII-only, so any non-ASCII symbol a widget
-//! draws is mapped to an ASCII stand-in; the UI (ui.rs) configures its
-//! widgets with ASCII symbol sets so that's only ever a fallback.
+//! draws is mapped to an ASCII stand-in. That's meant as a fallback:
+//! programs should draw ASCII (and `solid()` cells) to begin with.
 //!
 //! One console quirk shapes `size()`: writing the last column wraps the
 //! cursor immediately (no deferred wrap), so writing the bottom-right
@@ -23,7 +23,6 @@ use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use ratatui::style::Modifier;
-
 
 pub struct AnssBackend {
     out: Vec<u8>,
