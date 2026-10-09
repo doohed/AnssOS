@@ -1,6 +1,6 @@
 /* The raw syscall wrappers -- thin `int $0x80` stubs over AnssOS's
  * syscall ABI (vector 0x80, Linux-numbered: see kernel/src/exec/
- * syscall.c). userland/libc/*.c builds the rest of the M11 libc
+ * syscall.c). the userland/libc/ sources build the rest of the M11 libc
  * (malloc, printf, string.h) on top of these. */
 
 #include "libc.h"
