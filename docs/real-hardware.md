@@ -91,6 +91,16 @@ falling back to the PIT, and failing that to busy-wait sleeps, rather
 than hanging. Each path was forced and verified in QEMU, and the boot
 log now shows a `Timer:` line on screen saying which one is in use.
 
+**Attempt 2: past the splash, then `vfs: out of memory` and a page
+fault.** The timer worked (LAPIC, xAPIC, ARAT). The PMM returns 0 for
+"out of memory", but never reserved physical page 0 -- and this PC's
+firmware reports the first 640 KiB, from address 0, as usable RAM,
+which QEMU's never does. So the heap's first page-run allocation got
+page 0, read it as a failure, and the filesystem root was never
+created. `pmm_init()` now always reserves page 0; page-fault dumps also
+print `cr2` (the faulting address), and a missing VFS root stops boot
+with a message instead of a fault.
+
 The goal: boot on the PC and see the kernel log and the shell on screen.
 
 **1a. Split the virtio assumptions out of the generic code.**

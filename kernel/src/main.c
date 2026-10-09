@@ -184,6 +184,10 @@ void kmain(void) {
     }
 
     vfs_init();
+    if (vfs_root() == NULL) {
+        kprintf("PANIC: no memory for the filesystem root -- see the PMM line above\n");
+        hcf();
+    }
     kprintf("M7 complete: in-memory filesystem ready.\n");
 
     if (virtio_blk_init() == 0) {

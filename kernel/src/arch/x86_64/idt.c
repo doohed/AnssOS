@@ -117,6 +117,11 @@ void isr_handler(struct interrupt_frame *frame) {
 
     kprintf("\n--- CPU EXCEPTION: %s (vector %lu, error 0x%lx) ---\n",
             exception_name(frame->vector), frame->vector, frame->error_code);
+    if (frame->vector == 14) {
+        uint64_t cr2;
+        asm volatile("mov %%cr2, %0" : "=r"(cr2));
+        kprintf("faulting address (cr2)=0x%lx\n", cr2);
+    }
     kprintf("rip=0x%lx cs=0x%lx rflags=0x%lx rsp=0x%lx ss=0x%lx\n", frame->rip, frame->cs,
             frame->rflags, frame->rsp, frame->ss);
     kprintf("rax=0x%lx rbx=0x%lx rcx=0x%lx rdx=0x%lx\n", frame->rax, frame->rbx, frame->rcx,

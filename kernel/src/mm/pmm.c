@@ -100,6 +100,15 @@ void pmm_init(void) {
         }
     }
 
+    /* Page 0 is never handed out: 0 is what every allocator here returns
+     * for "out of memory". QEMU's firmware never reports it as usable,
+     * but a real PC's commonly does (the first 640 KiB), and handing it
+     * out made the heap's very first allocation look like a failure. */
+    if (!bitmap_test(0)) {
+        bitmap_set(0);
+        free_pages--;
+    }
+
     alloc_cursor = 0;
 
     kprintf("PMM: %lu pages tracked, %lu MiB free\n", total_pages,

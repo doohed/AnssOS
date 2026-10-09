@@ -12,7 +12,7 @@
 void pmm_init(void);
 
 /* Returns a physical address, or 0 on out-of-memory. 0 is never a valid */
-/* allocation since physical page 0 is always reserved. */
+/* allocation since pmm_init() always reserves physical page 0. */
 uint64_t pmm_alloc_page(void);
 void pmm_free_page(uint64_t phys_addr);
 
