@@ -14,7 +14,7 @@ driver:
 |---|---|---|
 | Screen | virtio-gpu, or the GOP framebuffer (`drivers/display.c`) | **Done:** the RX 5600 XT's GOP framebuffer, handed over by Limine |
 | Keyboard | virtio-input, USB (`drivers/usb/`), or COM1 | **Done:** USB via xHCI (the board has no PS/2 port) |
-| Disk | virtio-blk, blkfs from sector 0 | NVMe (or AHCI for SATA), inside a dedicated GPT partition |
+| Disk | virtio-blk; NVMe, SATA and USB storage read-only (`drivers/block.c`) | Installed onto a whole dedicated drive -- drivers **work in QEMU, untested on the PC**; installer next |
 | Audio | virtio-sound, or HD Audio (`drivers/hda.c`) | The board's HD Audio analog outputs -- **works in QEMU, untested on the PC**; the GPU's HDMI/DP audio needs a GPU driver |
 | Timer | LAPIC timer calibrated against the ACPI PM timer; PIT through the 8259 as a fallback (`drivers/timer.c`) | The PIT path hung the first real boot; the LAPIC timer needs no routing |
 | Other interrupts | 8259 PIC through LAPIC LINT0 (unused: every driver polls) | IO-APIC or MSI-X once drivers use interrupts |
@@ -206,33 +206,61 @@ including after boot. USB hubs (including ones inside monitors, and some
 front-panel wiring) come after, as a follow-up: a hub is logged as
 unsupported and skipped.
 
-## Phase 4 -- Disk
+## Phase 4 -- Disk, and an installer
 
-**4a. A block-device interface.** `struct block_device` with `read`,
-`write`, `sector_count` and a `first_sector` offset. blkfs goes through
-it instead of calling `virtio_blk_*` directly, and every access is
-bounds-checked against the device's range.
+The goal changed: instead of a partition carved out of an existing
+drive, the live USB gets an **installer** that puts AnssOS on a whole
+dedicated drive -- a fresh GPT with an EFI system partition (Limine and
+the kernel) and an AnssOS data partition (blkfs) -- which then boots on
+its own with persistent files. There's no spare drive yet, so the
+storage drivers came first, tested on the PC read-only.
 
-**4b. GPT and the AnssOS partition.** On a real disk, blkfs only ever
-uses a GPT partition with an AnssOS-specific type GUID. No such
-partition means in-memory only, never "use the whole disk". The
-partition is created from Linux or Windows by shrinking an existing one
-(`gdisk`/`parted` with the custom type GUID, documented here when
-chosen). virtio-blk in QEMU keeps the whole-disk layout, so
-`AnssOS-disk.img` and `scripts/disk-put.py` keep working.
+**4a. Storage drivers, read-only on the PC -- done in QEMU.**
 
-**4c. NVMe driver**, roughly 600-800 lines: enable bus mastering, map
-BAR0 (64-bit), reset, create the admin queues, Identify controller and
-namespace, create one I/O submission/completion queue pair, and do
-reads/writes with PRP entries (PRP lists for transfers over two pages).
-Polled completion.
+- `drivers/block.c`: every disk behind one interface, bounds-checked,
+  in the disk's own sector size. **Writes are locked**: `block_write()`
+  refuses unless the kernel command line (limine.conf `cmdline:`) has
+  `allow-disk-writes`, which only test ISOs carry -- `AnssOS.iso` never
+  does. virtio-blk (`AnssOS-disk.img`) isn't part of this layer.
+- `drivers/nvme.c` (nvme0, ...), `drivers/ahci.c` (sata0, ...; CD/DVD
+  drives skipped) and `drivers/usb/usb_storage.c` (usb0, ...; Bulk-Only
+  Transport + SCSI, on new bulk transfers in `drivers/usb/xhci.c`).
+  Bringing any of them up only resets controllers and asks questions;
+  a drive's data is only touched by reads and (unlocked) writes.
+- `drivers/partition.c`: GPT (both CRCs checked) or MBR, each partition
+  with its type, size, name and filesystem (NTFS, FAT, exFAT, ext,
+  BitLocker, btrfs, XFS, LUKS, ISO 9660, blkfs). Printed at boot and by
+  the kernel shell's `lsblk`.
+- `disktest <disk>` (kernel shell: `exit` from `sh`) reads the first MiB
+  twice and compares, then times 64 MiB of reads. `disktest <disk> -w`
+  (only when unlocked) saves a 1 MiB region, writes a pattern, reads it
+  back, then restores and verifies the original.
 
-**4d. Read-only first.** Ship with writes disabled and an `lsblk`
-builtin that prints the GPT. Turn writes on only after the partition
-bounds are confirmed on the real disk.
+Verified in QEMU on a 256 MiB GPT test image (FAT32 EFI partition plus
+NTFS- and ext4-signed ones) on each of NVMe, SATA and USB: the right
+partitions, types, sizes, names and filesystems with both GPT CRCs ok,
+identical double reads, and with writes unlocked the write check passed
+and left each image byte-for-byte unchanged. A copy of the ISO as a USB
+stick shows up as the hybrid ISO it is. On the PC, the boot log's
+`nvme`/`ahci`/`usb-storage` lines and partition listings (and
+`disktest`) are the test.
 
-If the PC boots from a SATA SSD instead, the driver is AHCI. Comparable
-size, same interface.
+**4b. The installer -- next.**
+
+1. GPT writing (protective MBR, both headers and arrays, CRCs).
+2. A FAT32 formatter: the EFI system partition with `EFI/BOOT/BOOTX64.EFI`
+   (Limine, embedded in the kernel like `testtone.wav`), `limine.conf`
+   and the kernel -- which Limine hands the kernel its own copy of, so
+   nothing has to be read back from the USB stick.
+3. blkfs on the data partition through the block layer, found at boot by
+   its partition GUID: the installed `limine.conf` passes `root=<GUID>`,
+   the live USB passes nothing and stays in RAM.
+4. An `install` program: pick a disk (model, size, current partitions),
+   type its name to confirm, progress -- the one place the write lock is
+   lifted, for that one disk.
+
+Testable end to end in QEMU: install to an NVMe image, then boot QEMU
+from that image alone and check files survive a reboot.
 
 ## Phase 5 -- Platform
 

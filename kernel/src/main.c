@@ -7,7 +7,11 @@
 #include "console/fbconsole.h"
 #include "console/splash.h"
 #include "drivers/audio.h"
+#include "drivers/ahci.h"
+#include "drivers/block.h"
 #include "drivers/display.h"
+#include "drivers/nvme.h"
+#include "drivers/partition.h"
 #include "drivers/pci.h"
 #include "drivers/timer.h"
 #include "drivers/usb/usb.h"
@@ -206,6 +210,14 @@ void kmain(void) {
         kprintf(
             "Skipping M9 (no virtio-blk device) -- filesystem stays in-memory only. "
             "Boot QEMU with -device virtio-blk-pci for persistence.\n");
+    }
+
+    /* Disks: found and described, never written (see drivers/block.h). */
+    block_init();
+    nvme_init();
+    ahci_init();
+    for (int i = 0; i < block_count(); i++) {
+        partition_report(block_get(i));
     }
 
     if (audio_init() == 0) {

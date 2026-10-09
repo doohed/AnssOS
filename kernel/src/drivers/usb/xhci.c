@@ -1,5 +1,6 @@
 #include "usb.h"
 #include "usb_kbd.h"
+#include "usb_storage.h"
 #include "../pci.h"
 #include "../serial.h"
 #include "../timer.h"
@@ -69,6 +70,7 @@ struct xhci_trb {
 #define TRB_CYCLE (1u << 0)
 #define TRB_TOGGLE_CYCLE (1u << 1) /* Link TRBs. */
 #define TRB_ISP (1u << 2)
+#define TRB_CHAIN (1u << 4)
 #define TRB_IOC (1u << 5)
 #define TRB_IDT (1u << 6)
 #define TRB_DIR_IN (1u << 16)
@@ -100,7 +102,9 @@ struct xhci_trb {
 #define SPEED_HIGH 3
 #define SPEED_SUPER 4
 
+#define EP_TYPE_BULK_OUT 2
 #define EP_TYPE_CONTROL 4
+#define EP_TYPE_BULK_IN 6
 #define EP_TYPE_INTERRUPT_IN 7
 
 struct erst_entry {
@@ -253,6 +257,21 @@ static void handle_event(struct xhci *hc, const struct xhci_trb *ev) {
     if (dci == 1) {
         dev->ctrl_cc = cc;
         dev->ctrl_done = 1;
+        return;
+    }
+    if (dci == dev->bulk_dci && !dev->bulk_done) {
+        /* Whichever of the transfer's TRBs reported (a short packet ends
+         * it early), everything before that TRB moved in full. */
+        uint32_t residual = ev->status & 0xFFFFFF;
+        for (uint32_t i = 0; i < dev->bulk_trb_count; i++) {
+            if (ev->param == dev->bulk_trbs[i]) {
+                uint32_t moved = residual <= dev->bulk_lengths[i] ? dev->bulk_lengths[i] - residual
+                                                                  : 0;
+                dev->bulk_actual = dev->bulk_offsets[i] + moved;
+            }
+        }
+        dev->bulk_cc = cc;
+        dev->bulk_done = 1;
         return;
     }
     struct usb_ring *r = &dev->rings[dci];
@@ -445,6 +464,79 @@ int usb_add_interrupt_in(struct usb_device *dev, uint8_t ep_address, uint16_t ma
     return (int)dci;
 }
 
+int usb_add_bulk(struct usb_device *dev, uint8_t ep_address, uint16_t max_packet) {
+    uint32_t dci = (ep_address & 0x0F) * 2u + ((ep_address & 0x80) ? 1 : 0);
+    if (ring_init(dev->hc, &dev->rings[dci]) != 0) {
+        return -1;
+    }
+
+    memset(dev->in_ctx, 0, PMM_PAGE_SIZE);
+    in_ctrl(dev)[1] = 1u | (1u << dci);
+    memcpy(in_slot(dev), dev->out_ctx, dev->hc->ctx_size);
+    uint32_t entries = (in_slot(dev)[0] >> 27) & 0x1F;
+    if (dci > entries) {
+        in_slot(dev)[0] = (in_slot(dev)[0] & ~(0x1Fu << 27)) | (dci << 27);
+    }
+
+    uint32_t *ep = in_ep(dev, dci);
+    uint32_t type = (ep_address & 0x80) ? EP_TYPE_BULK_IN : EP_TYPE_BULK_OUT;
+    ep[1] = (3u << 1) | (type << 3) | ((uint32_t)max_packet << 16);
+    set_ep_dequeue(ep, &dev->rings[dci]);
+    ep[4] = 3072; /* Average TRB length: a guess, only used for scheduling. */
+
+    uint32_t cc = run_command(dev->hc, dev->in_ctx_phys,
+                              TRB_TYPE(TRB_CONFIGURE_ENDPOINT) | ((uint32_t)dev->slot << 24));
+    if (cc != CC_SUCCESS) {
+        kprintf("usb: port %u: configuring bulk endpoint 0x%x failed (%u)\n", dev->port,
+                ep_address, cc);
+        return -1;
+    }
+    dev->ep_mps[dci] = max_packet;
+    return (int)dci;
+}
+
+uint32_t usb_bulk(struct usb_device *dev, int dci, uint64_t buf_phys, uint32_t length,
+                  uint32_t *actual, uint32_t timeout_ms) {
+    if (dev->gone || length > 0x10000) {
+        return 0;
+    }
+    /* A TRB's buffer can't cross a 64 KiB boundary (6.4.1), so the
+     * transfer is a chain of TRBs split there. */
+    struct usb_ring *r = &dev->rings[dci];
+    dev->bulk_trb_count = 0;
+    dev->bulk_actual = 0;
+    uint32_t done = 0;
+    do {
+        uint64_t at = buf_phys + done;
+        uint32_t to_boundary = 0x10000 - (uint32_t)(at & 0xFFFF);
+        uint32_t n = length - done < to_boundary ? length - done : to_boundary;
+        int last = done + n == length;
+        uint32_t i = dev->bulk_trb_count++;
+        dev->bulk_offsets[i] = done;
+        dev->bulk_lengths[i] = n;
+        uint32_t flags = TRB_TYPE(TRB_NORMAL) | TRB_ISP | (last ? TRB_IOC : TRB_CHAIN);
+        dev->bulk_trbs[i] = ring_push(r, at, n, flags);
+        done += n;
+    } while (done < length);
+
+    dev->bulk_dci = (uint32_t)dci;
+    dev->bulk_done = 0;
+    ring_doorbell(dev->hc, dev->slot, (uint32_t)dci);
+    if (wait_flag(dev->hc, &dev->bulk_done, timeout_ms) != 0) {
+        dev->bulk_dci = 0;
+        return 0;
+    }
+    dev->bulk_dci = 0;
+    if (dev->bulk_cc == CC_SUCCESS) {
+        dev->bulk_actual = length;
+    }
+    if (dev->bulk_cc == CC_STALL) {
+        recover_endpoint(dev, (uint32_t)dci);
+    }
+    *actual = dev->bulk_actual;
+    return dev->bulk_cc;
+}
+
 void usb_queue_in(struct usb_device *dev, int dci, uint64_t buf_phys, uint16_t length) {
     ring_push(&dev->rings[dci], buf_phys, length, TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
     ring_doorbell(dev->hc, dev->slot, (uint32_t)dci);
@@ -594,7 +686,9 @@ static void enumerate_port(struct xhci *hc, uint32_t i) {
         total = PMM_PAGE_SIZE;
     }
     if (usb_control(dev, 0x80, 6, 0x0200, 0, config, total) == 0) {
-        usb_kbd_probe(dev, config, total);
+        if (usb_kbd_probe(dev, config, total) != 0) {
+            usb_storage_probe(dev, config, total);
+        }
     }
     kfree(config);
 }

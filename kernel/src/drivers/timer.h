@@ -34,6 +34,13 @@ uint64_t timer_uptime_ms(void);
  * yield to anything else). */
 void timer_sleep_ms(uint32_t ms);
 
+/* One moment of a busy-wait: lets a pending tick in, then puts the
+ * interrupt flag back the way it was. Inside a syscall (an interrupt
+ * gate: interrupts off) a long wait would otherwise stop the clock --
+ * uptime freezes and timeouts measured with timer_uptime_ms() never
+ * expire. */
+void timer_idle(void);
+
 /* One line describing the source in use, via kprintf -- for the boot log,
  * where it's the first thing to check if a real PC hangs at boot. */
 void timer_log_status(void);

@@ -45,6 +45,11 @@ struct usb_device {
     usb_transfer_fn on_transfer[USB_MAX_ENDPOINTS];
     volatile int ctrl_done;
     uint32_t ctrl_cc;
+    /* The one synchronous bulk transfer in flight (usb_bulk()). */
+    volatile int bulk_done;
+    uint32_t bulk_cc, bulk_dci;
+    uint64_t bulk_trbs[4]; /* Its TRBs, and the byte offset each starts at. */
+    uint32_t bulk_offsets[4], bulk_lengths[4], bulk_trb_count, bulk_actual;
     void *driver_data;
 };
 
@@ -70,6 +75,18 @@ int usb_control(struct usb_device *dev, uint8_t request_type, uint8_t request, u
  * endpoint's DCI for usb_queue_in(), or -1. */
 int usb_add_interrupt_in(struct usb_device *dev, uint8_t ep_address, uint16_t max_packet,
                          uint8_t interval, usb_transfer_fn fn);
+
+/* Configures bulk endpoint `ep_address` (IN or OUT, from its endpoint
+ * descriptor) for usb_bulk(). Returns its DCI, or -1. */
+int usb_add_bulk(struct usb_device *dev, uint8_t ep_address, uint16_t max_packet);
+
+/* One bulk transfer of up to 64 KiB to or from `buf_phys` (DMA-able,
+ * e.g. from the PMM), waiting for it to finish. Returns the xHCI
+ * completion code (1 success, 13 short packet; 6 means the endpoint
+ * stalled and has been reset on the host side), or 0 on timeout.
+ * `*actual` gets the bytes moved. */
+uint32_t usb_bulk(struct usb_device *dev, int dci, uint64_t buf_phys, uint32_t length,
+                  uint32_t *actual, uint32_t timeout_ms);
 
 /* Queues one IN transfer into `buf_phys` (DMA-able memory, e.g. from the
  * PMM). It completes through the endpoint's usb_transfer_fn. */

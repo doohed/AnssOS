@@ -678,10 +678,10 @@ static uint32_t put(const uint8_t *src, uint32_t n) {
     return n;
 }
 
-/* One idle moment: interrupts on, so the tick (and the stall timeout
- * below) keeps going inside the syscall. */
+/* One idle moment, letting the tick in so the stall timeout below keeps
+ * counting inside the syscall. */
 static void idle(void) {
-    asm volatile("sti; pause; cli");
+    timer_idle();
 }
 
 int hda_write(const void *pcm_s16le, uint32_t bytes) {

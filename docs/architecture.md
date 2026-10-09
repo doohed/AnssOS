@@ -30,10 +30,13 @@ what went wrong building it; this is the shape of the result.
   and speaks the virtio 1.x ("modern") PCI transport directly — no legacy
   virtio. Each kind of device has a real-hardware path next to its
   virtio one: the firmware's GOP framebuffer when there's no virtio-gpu
-  (`drivers/display.c`), USB keyboards on xHCI (`drivers/usb/`), and
+  (`drivers/display.c`), USB keyboards on xHCI (`drivers/usb/`),
   Intel HD Audio (`drivers/hda.c`) behind the same `audio_*` interface
   as virtio-sound (`drivers/audio.c`; playback only, see
-  [play.md](play.md)). Everything is polled -- no device interrupts.
+  [play.md](play.md)), and NVMe, SATA (AHCI) and USB disks behind one
+  block layer (`drivers/block.c`) whose writes are locked unless the
+  kernel command line says `allow-disk-writes`. Everything is polled --
+  no device interrupts.
 - **Debugging:** all kernel logging goes out over the COM1 serial port
   (`kprintf`), independent of the display, so anything after boot is
   debuggable via `-serial stdio` even before the framebuffer driver works.

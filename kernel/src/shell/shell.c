@@ -1,6 +1,9 @@
 #include "shell.h"
 #include "../arch/x86_64/io.h"
 #include "../console/fbconsole.h"
+#include "../drivers/block.h"
+#include "../drivers/disktest.h"
+#include "../drivers/partition.h"
 #include "../drivers/pci.h"
 #include "../drivers/timer.h"
 #include "../drivers/serial.h"
@@ -49,6 +52,8 @@ static void cmd_cat(const char *args);
 static void cmd_write(const char *args);
 static void cmd_sync(const char *args);
 static void cmd_run(const char *args);
+static void cmd_lsblk(const char *args);
+static void cmd_disktest(const char *args);
 
 static const struct builtin BUILTINS[] = {
     {"help", "list commands", cmd_help},
@@ -57,6 +62,8 @@ static const struct builtin BUILTINS[] = {
     {"uname", "print kernel/arch info", cmd_uname},
     {"meminfo", "print physical memory allocator stats", cmd_meminfo},
     {"lspci", "list PCI devices found at boot", cmd_lspci},
+    {"lsblk", "list disks, their partitions and filesystems (read-only)", cmd_lsblk},
+    {"disktest", "disktest <disk> [-w] -- check a disk driver (-w: writes too)", cmd_disktest},
     {"uptime", "print time elapsed since interrupts were enabled", cmd_uptime},
     {"crash", "deliberately trigger a #DE to test exception handling", cmd_crash},
     {"reboot", "reset the machine", cmd_reboot},
@@ -242,6 +249,36 @@ static void cmd_meminfo(const char *args) {
 static void cmd_lspci(const char *args) {
     (void)args;
     pci_print_devices();
+}
+
+static void cmd_lsblk(const char *args) {
+    (void)args;
+    if (block_count() == 0) {
+        kprintf("no disks found\n");
+    }
+    for (int i = 0; i < block_count(); i++) {
+        partition_report(block_get(i));
+    }
+}
+
+static void cmd_disktest(const char *args) {
+    char name[16];
+    size_t n = 0;
+    while (args[n] && args[n] != ' ' && n + 1 < sizeof(name)) {
+        name[n] = args[n];
+        n++;
+    }
+    name[n] = '\0';
+    struct block_device *dev = block_find(name);
+    if (dev == NULL) {
+        kprintf("usage: disktest <disk> [-w] -- disks are listed by lsblk\n");
+        return;
+    }
+    const char *rest = args + n;
+    while (*rest == ' ') {
+        rest++;
+    }
+    disktest_run(dev, strcmp(rest, "-w") == 0);
 }
 
 static void cmd_uptime(const char *args) {
@@ -562,6 +599,10 @@ void shell_run(void) {
 
     char line[LINE_MAX];
     for (;;) {
+        /* A userland program that just finished left us here from inside
+         * a syscall, with interrupts still off -- which would stop the
+         * tick (uptime, timeouts) for as long as this shell runs. */
+        asm volatile("sti");
         char prompt_path[256];
         vfs_path(cwd, prompt_path, sizeof(prompt_path));
         kprintf("AnssOS:%s> ", prompt_path);

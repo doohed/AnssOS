@@ -174,6 +174,15 @@ void timer_sleep_ms(uint32_t ms) {
     }
 }
 
+void timer_idle(void) {
+    uint64_t flags;
+    asm volatile("pushfq; pop %0" : "=r"(flags));
+    asm volatile("sti; pause" ::: "memory");
+    if (!(flags & 0x200)) {
+        asm volatile("cli" ::: "memory");
+    }
+}
+
 void timer_log_status(void) {
     switch (source) {
         case SOURCE_LAPIC:

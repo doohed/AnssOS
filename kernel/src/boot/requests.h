@@ -15,5 +15,10 @@ extern volatile struct limine_hhdm_request hhdm_request;
 extern volatile struct limine_memmap_request memmap_request;
 extern volatile struct limine_framebuffer_request framebuffer_request;
 extern volatile struct limine_rsdp_request rsdp_request;
+extern volatile struct limine_executable_cmdline_request cmdline_request;
+
+/* Whether `word` is one of the space-separated words of the kernel
+ * command line (limine.conf's `cmdline:`). */
+int boot_option(const char *word);
 
 #endif
