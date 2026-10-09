@@ -1,6 +1,6 @@
 #include "pic.h"
 #include "io.h"
-#include "../../mm/vmm.h"
+#include "lapic.h"
 
 #include <stdint.h>
 
@@ -14,11 +14,6 @@
 #define ICW4_8086 0x01
 #define PIC_EOI 0x20
 
-#define IA32_APIC_BASE_MSR 0x1B
-#define APIC_BASE_ADDR_MASK 0xFFFFF000ull
-#define APIC_REG_SVR 0x0F0
-#define APIC_REG_LVT_LINT0 0x350
-
 /* On chipsets that default to APIC-only interrupt routing (QEMU's q35
  * included), a fully-correct PIC+PIT setup can sit with IRQs raised in
  * the 8259's IRR forever and never reach the CPU: real hardware wires
@@ -31,21 +26,11 @@
  * piece. Must run after the PMM is up (vmm_map_mmio() allocates page
  * tables through it). */
 static void lapic_enable_extint_passthrough(void) {
-    uint32_t lo, hi;
-    asm volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(IA32_APIC_BASE_MSR));
-    uint64_t apic_base_phys = (((uint64_t)hi << 32) | lo) & APIC_BASE_ADDR_MASK;
-
-    volatile uint32_t *apic = (volatile uint32_t *)vmm_map_mmio(apic_base_phys, 0x1000);
-
-    /* Spurious Interrupt Vector Register, bit 8: software-enables the
-     * LAPIC -- without this the LVT write below is inert even though the
-     * MSR's global enable bit is already set. Spurious vector 0xFF is
-     * conventional (unused; harmless if it ever actually fires). */
-    apic[APIC_REG_SVR / 4] = 0x1FF;
+    lapic_init(); /* Software-enables the LAPIC -- the LVT write below is inert without it. */
 
     /* LVT LINT0 = ExtINT (delivery mode 111, bits 10:8) and unmasked
      * (bit 16 clear). */
-    apic[APIC_REG_LVT_LINT0 / 4] = 0x700;
+    lapic_write(LAPIC_REG_LVT_LINT0, 0x700);
 }
 
 void pic_remap(void) {

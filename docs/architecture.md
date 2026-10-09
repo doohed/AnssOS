@@ -39,6 +39,12 @@ what went wrong building it; this is the shape of the result.
   debuggable via `-serial stdio` even before the framebuffer driver works.
   `serial_init()` checks the UART is really there (a loopback self-test)
   and goes quiet if not, as on many real PCs.
+- **Timer:** `drivers/timer.c` ticks at 100 Hz from the Local APIC timer
+  (xAPIC or x2APIC), calibrated against the ACPI PM timer that
+  `drivers/acpi.c` finds in the FADT. The PIT through the 8259 is only
+  the fallback: a real board needn't route it to the CPU at all. Boot
+  checks that ticks really arrive and logs a `Timer:` line saying which
+  source won.
 
 ## Processes and userspace
 

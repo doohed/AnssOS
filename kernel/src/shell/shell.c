@@ -2,7 +2,7 @@
 #include "../arch/x86_64/io.h"
 #include "../console/fbconsole.h"
 #include "../drivers/pci.h"
-#include "../drivers/pit.h"
+#include "../drivers/timer.h"
 #include "../drivers/serial.h"
 #include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/input.h"
@@ -249,8 +249,8 @@ static void cmd_uptime(const char *args) {
     /* kprintf has no field-width support (see drivers/serial.h), so this
      * skips trying to zero-pad a "seconds.milliseconds" split and just
      * reports both plainly. */
-    uint64_t ms = pit_uptime_ms();
-    kprintf("%lus (%lu ms, %lu ticks @ %u Hz)\n", ms / 1000, ms, pit_ticks(), (uint32_t)PIT_HZ);
+    uint64_t ms = timer_uptime_ms();
+    kprintf("%lus (%lu ms, %lu ticks @ %u Hz)\n", ms / 1000, ms, timer_ticks(), (uint32_t)TIMER_HZ);
 }
 
 static void cmd_crash(const char *args) {

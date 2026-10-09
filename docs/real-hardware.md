@@ -16,7 +16,8 @@ all. Everything else still only has a virtio driver:
 | Keyboard | virtio-input, or COM1 | PS/2 if the board has a port, otherwise USB via xHCI |
 | Disk | virtio-blk, blkfs from sector 0 | NVMe (or AHCI for SATA), inside a dedicated GPT partition |
 | Audio | virtio-sound | Intel HD Audio controller + Realtek codec, and the GPU's HDMI/DP audio |
-| Interrupts | 8259 PIC through LAPIC LINT0, PIT | Probably works as-is; IO-APIC later |
+| Timer | LAPIC timer calibrated against the ACPI PM timer; PIT through the 8259 as a fallback (`drivers/timer.c`) | The PIT path hung the first real boot; the LAPIC timer needs no routing |
+| Other interrupts | 8259 PIC through LAPIC LINT0 (unused: every driver polls) | IO-APIC or MSI-X once drivers use interrupts |
 | Debug log | COM1 (`-serial stdio`), skipped when no UART answers | Only if the board has a COM header; otherwise the screen |
 
 Things that already carry over: Limine boots over UEFI, the ISO is a
@@ -75,6 +76,20 @@ on the real PC, is next. One fix beyond the plan: `serial_init()` now
 checks a UART is really at COM1, because a missing one reads as an
 endless stream of phantom `0xFF` key presses -- which the shell, now
 running without a keyboard, would otherwise have received.
+
+**First real boot (1d), attempt 1: hung on the splash.** The logo and
+caption appeared, then nothing -- the first `timer_sleep_ms()` in the
+splash animation never returned. The timer was the PIT's IRQ0 through
+the 8259 and LAPIC LINT0, which QEMU wires up and this board evidently
+doesn't (or the firmware left the LAPIC in x2APIC mode, where the old
+MMIO setup is silently ignored -- no serial port, so no way to tell
+which). Phase 5's timer item was pulled forward to fix it:
+`drivers/timer.c` now runs the Local APIC timer, in xAPIC or x2APIC
+mode, calibrated against the ACPI PM timer (`drivers/acpi.c`) or PIT
+channel 2 polled, and checks after `sti` that ticks really arrive --
+falling back to the PIT, and failing that to busy-wait sleeps, rather
+than hanging. Each path was forced and verified in QEMU, and the boot
+log now shows a `Timer:` line on screen saying which one is in use.
 
 The goal: boot on the PC and see the kernel log and the shell on screen.
 
@@ -193,12 +208,13 @@ size, same interface.
 Not strictly required for the phases above, but they make the system
 behave correctly rather than by luck:
 
-- **ACPI tables** (the RSDP is already requested): MADT for the
-  IO-APIC and the CPU list, FADT for the reset register.
+- **ACPI tables:** `drivers/acpi.c` already walks the XSDT/RSDT for the
+  FADT's PM timer; still to read: MADT for the IO-APIC and the CPU list,
+  the FADT's reset register.
 - **IO-APIC** instead of the 8259 through LINT0, or **MSI-X** per device
   once drivers move from polling to interrupts.
-- **Timer:** the PIT exists on this chipset; the LAPIC timer is the
-  later upgrade, and needed for SMP.
+- **Timer:** done early, see phase 1d above -- the LAPIC timer, which
+  SMP will need per CPU anyway.
 - **SMP** (using all 6 cores of the 5600G) is a project of its own --
   the scheduler and every shared kernel structure assume one CPU.
 

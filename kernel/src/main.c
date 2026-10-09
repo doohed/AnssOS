@@ -8,7 +8,7 @@
 #include "console/splash.h"
 #include "drivers/display.h"
 #include "drivers/pci.h"
-#include "drivers/pit.h"
+#include "drivers/timer.h"
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_blk.h"
 #include "drivers/virtio/virtio_input.h"
@@ -137,11 +137,14 @@ void kmain(void) {
     /* pic_remap() maps the Local APIC's MMIO page (vmm_map_mmio(), see
      * arch/x86_64/pic.c) to relay the legacy PIC's interrupts through
      * it -- needs the PMM (and its own page-table allocations) up
-     * first, hence running this here rather than right after idt_init(). */
+     * first, hence running this here rather than right after idt_init().
+     * timer_init() likewise maps ACPI tables. */
     pic_remap();
-    pit_init();
+    timer_init();
     asm volatile("sti");
-    kprintf("Interrupts enabled (PIT @ %u Hz).\n", PIT_HZ);
+    timer_check(); /* Never trust that ticks arrive -- a real PC may not route them. */
+    timer_log_status();
+    kprintf("Interrupts enabled.\n");
     kprintf("M2 complete.\n");
 
     pci_enumerate();
@@ -166,6 +169,7 @@ void kmain(void) {
         fbconsole_write(display_name());
         fbconsole_write("\n\n");
         kprintf("M5 complete: framebuffer console live via %s.\n", display_name());
+        timer_log_status(); /* Again, now that it reaches the screen too. */
     } else {
         kprintf("Skipping M5 (no display: no virtio-gpu, no firmware framebuffer).\n");
     }

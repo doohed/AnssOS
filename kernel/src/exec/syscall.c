@@ -3,7 +3,7 @@
 #include "../arch/x86_64/usermode.h"
 #include "../console/fbconsole.h"
 #include "../drivers/serial.h"
-#include "../drivers/pit.h"
+#include "../drivers/timer.h"
 #include "../drivers/tty.h"
 #include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/input.h"
@@ -278,8 +278,8 @@ static int64_t sys_sync_impl(void) {
 }
 
 /* Linux's struct timespec. Only CLOCK_MONOTONIC (1) exists: there's no
- * real-time clock driver, only the PIT's time since boot
- * (drivers/pit.h), at 10 ms resolution. */
+ * real-time clock driver, only the timer's time since boot
+ * (drivers/timer.h), at 10 ms resolution. */
 struct k_timespec {
     int64_t tv_sec;
     int64_t tv_nsec;
@@ -290,7 +290,7 @@ static int64_t sys_clock_gettime_impl(int clock, struct k_timespec *ts) {
     if (clock != CLOCK_MONOTONIC || !user_ptr_ok(ts, sizeof(*ts))) {
         return -1;
     }
-    uint64_t ms = pit_uptime_ms();
+    uint64_t ms = timer_uptime_ms();
     ts->tv_sec = (int64_t)(ms / 1000);
     ts->tv_nsec = (int64_t)(ms % 1000) * 1000000;
     return 0;

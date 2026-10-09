@@ -1,52 +1,44 @@
 #include "pit.h"
-#include "../arch/x86_64/idt.h"
 #include "../arch/x86_64/io.h"
-#include "../arch/x86_64/pic.h"
 
 #include <stdint.h>
 
 #define PIT_CHANNEL0 0x40
+#define PIT_CHANNEL2 0x42
 #define PIT_COMMAND 0x43
-#define PIT_BASE_FREQ 1193182
+#define PIT_GATE_PORT 0x61 /* Bit 0: channel 2 gate, bit 1: speaker, bit 5: channel 2 output. */
 
-static volatile uint64_t ticks;
-
-static void pit_irq_handler(void) {
-    ticks++;
-}
-
-void pit_init(void) {
-    uint16_t divisor = (uint16_t)(PIT_BASE_FREQ / PIT_HZ);
+void pit_start_periodic(uint32_t hz) {
+    uint16_t divisor = (uint16_t)(PIT_BASE_FREQ / hz);
 
     outb(PIT_COMMAND, 0x36); /* Channel 0, lobyte/hibyte access, mode 3 (square wave), binary. */
     outb(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
     outb(PIT_CHANNEL0, (uint8_t)(divisor >> 8));
-
-    irq_register(0, pit_irq_handler);
-    pic_clear_mask(0);
 }
 
-uint64_t pit_ticks(void) {
-    return ticks;
-}
-
-uint64_t pit_uptime_ms(void) {
-    return ticks * (1000 / PIT_HZ);
-}
-
-void pit_sleep_ms(uint32_t ms) {
-    if (ms == 0) {
-        return;
+int pit_poll_wait_ms(uint32_t ms) {
+    uint32_t count = PIT_BASE_FREQ / 1000 * ms;
+    if (count > 0xFFFF) {
+        count = 0xFFFF;
     }
 
-    uint32_t ms_per_tick = 1000 / PIT_HZ;
-    uint64_t ticks_needed = (ms + ms_per_tick - 1) / ms_per_tick;
-    if (ticks_needed == 0) {
-        ticks_needed = 1;
-    }
+    /* Gate off, speaker off, then mode 0 (output goes high when the
+     * count reaches zero), then raise the gate to start counting. */
+    uint8_t gate = inb(PIT_GATE_PORT) & (uint8_t)~0x03;
+    outb(PIT_GATE_PORT, gate);
+    outb(PIT_COMMAND, 0xB0); /* Channel 2, lobyte/hibyte access, mode 0, binary. */
+    outb(PIT_CHANNEL2, (uint8_t)(count & 0xFF));
+    outb(PIT_CHANNEL2, (uint8_t)(count >> 8));
+    outb(PIT_GATE_PORT, gate | 0x01);
 
-    uint64_t target = ticks + ticks_needed;
-    while (ticks < target) {
-        asm volatile("sti; hlt");
+    /* Each port read is roughly a microsecond, so this gives up after a
+     * few seconds rather than hanging on a dead timer. */
+    for (uint32_t i = 0; i < 5000000; i++) {
+        if (inb(PIT_GATE_PORT) & 0x20) {
+            outb(PIT_GATE_PORT, gate);
+            return 0;
+        }
     }
+    outb(PIT_GATE_PORT, gate);
+    return -1;
 }

@@ -2,7 +2,7 @@
 #include "braille_art.h"
 #include "fbconsole.h"
 #include "../drivers/display.h"
-#include "../drivers/pit.h"
+#include "../drivers/timer.h"
 
 #include <stdint.h>
 
@@ -11,7 +11,7 @@
 #define ART_COLOR 0x00FFFFFFu /* BGRX8888: white. */
 #define CAPTION "AnssOS"
 
-#define ANIM_FRAME_MS 250 /* Real time now, via drivers/pit.c -- no more guessed spin count. */
+#define ANIM_FRAME_MS 250 /* Real time, via drivers/timer.c -- no guessed spin count. */
 #define ANIM_CYCLES 4
 
 /* Fixed-width so each frame fully overwrites the last -- otherwise ".."
@@ -155,7 +155,7 @@ void splash_show(struct framebuffer *fb) {
         for (uint32_t f = 0; f < DOT_FRAME_COUNT; f++) {
             fbconsole_draw_text_at(dots_col, dots_row, DOT_FRAMES[f]);
             display_flush();
-            pit_sleep_ms(ANIM_FRAME_MS);
+            timer_sleep_ms(ANIM_FRAME_MS);
         }
     }
 }

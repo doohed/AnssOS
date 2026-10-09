@@ -3,23 +3,19 @@
 
 #include <stdint.h>
 
-#define PIT_HZ 100 /* 100 ticks/sec = 10 ms/tick. */
+/* The legacy 8254 Programmable Interval Timer. drivers/timer.c is what
+ * the rest of the kernel uses; this is just the two things it needs from
+ * the chip. */
 
-/* Programs PIT channel 0 (mode 3, square wave) for PIT_HZ, registers its
- * IRQ0 handler (see arch/x86_64/idt.h's irq_register()), and unmasks
- * IRQ0 on the PIC. arch/x86_64/idt_init() and pic_remap() must have
- * already run; nothing ticks until interrupts are globally enabled
- * (`sti`) afterward. */
-void pit_init(void);
+#define PIT_BASE_FREQ 1193182
 
-uint64_t pit_ticks(void);
-uint64_t pit_uptime_ms(void);
+/* Channel 0 as a square wave at `hz`: IRQ0 on the 8259, if the board
+ * actually routes that to the CPU (QEMU does; real PCs may not). */
+void pit_start_periodic(uint32_t hz);
 
-/* Waits (sti; hlt per iteration -- woken by any interrupt, not just the
- * timer, but re-checks and goes back to sleep if it wasn't enough) until
- * at least `ms` milliseconds have passed. There's no scheduler yet, so
- * this can't yield to anything else; it's still strictly better than a
- * guessed busy-wait spin count. */
-void pit_sleep_ms(uint32_t ms);
+/* Busy-waits `ms` (at most 50) on channel 2, polled through port 0x61 --
+ * no interrupt involved. Returns -1 if the channel never finishes,
+ * e.g. a chipset with the 8254 switched off. */
+int pit_poll_wait_ms(uint32_t ms);
 
 #endif

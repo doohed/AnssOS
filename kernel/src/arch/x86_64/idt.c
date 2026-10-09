@@ -1,7 +1,9 @@
 #include "idt.h"
+#include "lapic.h"
 #include "pic.h"
 #include "usermode.h"
 #include "../../drivers/serial.h"
+#include "../../drivers/timer.h"
 #include "../../exec/process.h"
 
 #include <stddef.h>
@@ -144,8 +146,8 @@ void irq_register(uint8_t irq, void (*handler)(void)) {
  * M13 Phase B preemption: if this was the timer (IRQ0) interrupting
  * ring-3 code, hand the CPU to a different runnable process instead of
  * just returning to the one that was running. This happens *after* the
- * normal dispatch/EOI above -- pit.c's own registered handler still
- * ticks pit_ticks() every time regardless of whether a preemption
+ * normal dispatch/EOI above -- timer.c's own registered handler still
+ * ticks timer_ticks() every time regardless of whether a preemption
  * follows, and EOI must happen before we potentially abandon this
  * interrupt entirely (skipping it would leave the PIC thinking IRQ0 is
  * still in service, blocking further timer interrupts). The process
@@ -159,7 +161,11 @@ void irq_handler(struct interrupt_frame *frame) {
     if (irq < 16 && irq_handlers[irq] != NULL) {
         irq_handlers[irq]();
     }
-    pic_send_eoi((uint8_t)irq);
+    if (irq == 0 && timer_uses_lapic()) {
+        lapic_eoi(); /* The tick came from the Local APIC timer, not the 8259. */
+    } else {
+        pic_send_eoi((uint8_t)irq);
+    }
 
     if (frame->vector == PIC_IRQ_BASE && (frame->cs & 3) == 3) {
         struct process *me = process_current();
