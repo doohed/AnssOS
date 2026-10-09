@@ -7,6 +7,12 @@
 
 #define COM1 0x3F8
 
+/* Whether a UART actually answers at COM1. Many real PCs have none (or
+ * only an unpopulated header), and a missing one reads back 0xFF from
+ * every register -- whose Line Status bit 0 says "data ready" forever,
+ * which would feed the shell an endless stream of phantom 0xFF bytes. */
+static int present;
+
 void serial_init(void) {
     outb(COM1 + 1, 0x00); /* Disable interrupts; we poll. */
     outb(COM1 + 3, 0x80); /* Enable DLAB to set the baud rate divisor. */
@@ -15,6 +21,13 @@ void serial_init(void) {
     outb(COM1 + 3, 0x03); /* 8 bits, no parity, one stop bit; clear DLAB. */
     outb(COM1 + 2, 0xC7); /* Enable FIFO, clear it, 14-byte threshold. */
     outb(COM1 + 4, 0x0B); /* IRQs off, RTS/DSR set. */
+
+    /* Loopback self-test: in loopback mode a real 16550 hands a sent byte
+     * straight back to its own receiver (and not out of the port). */
+    outb(COM1 + 4, 0x1E);
+    outb(COM1 + 0, 0xAE);
+    present = inb(COM1 + 0) == 0xAE;
+    outb(COM1 + 4, 0x0F); /* Back to normal operation, OUT1/OUT2 set. */
 }
 
 static int serial_tx_empty(void) {
@@ -26,13 +39,16 @@ static int serial_rx_ready(void) {
 }
 
 int serial_poll_char(void) {
-    if (!serial_rx_ready()) {
+    if (!present || !serial_rx_ready()) {
         return -1;
     }
     return inb(COM1);
 }
 
 void serial_putc(char c) {
+    if (!present) {
+        return;
+    }
     if (c == '\n') {
         serial_putc('\r');
     }

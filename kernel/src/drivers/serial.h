@@ -9,7 +9,7 @@ void serial_putc(char c);
 void serial_write(const char *s);
 
 /* Non-blocking: returns the next byte received on COM1, or -1 if none is
- * pending. A second input source alongside the virtio-input keyboard
+ * pending -- always -1 when serial_init() found no UART there. A second input source alongside the virtio-input keyboard
  * (see drivers/virtio/virtio_input.h) -- useful because virtio-input
  * needs a real graphical window with keyboard focus to receive anything
  * at all, which a headless/terminal-only setup (`-display none`, the

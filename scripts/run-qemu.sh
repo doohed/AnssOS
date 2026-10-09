@@ -3,10 +3,23 @@
 # device. Does NOT build the ISO -- run scripts/build-iso.sh (or `make`)
 # first.
 #
+#   --pc   Boot it the way a real PC looks instead (docs/real-hardware.md):
+#          no virtio devices at all, a plain VGA card whose UEFI GOP
+#          framebuffer is the only display, 4 GiB of RAM, 6 CPUs. Only
+#          what AnssOS has a real-hardware driver for works here, so
+#          input is the serial console for now and there's no disk or
+#          audio. Must be the first argument; the rest still go to QEMU.
+#
 # Requires: qemu-system-x86_64, OVMF firmware.
 #   sudo apt-get install -y qemu-system-x86 ovmf
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+PC_MODE=0
+if [ "${1:-}" = "--pc" ]; then
+    PC_MODE=1
+    shift
+fi
 
 ISO="AnssOS.iso"
 if [ ! -f "$ISO" ]; then
@@ -97,7 +110,8 @@ else
 fi
 
 # Display resolution -- virtio-gpu's own xres/yres properties, which set
-# the mode the device reports to the guest at boot. Everything downstream
+# the mode the device reports to the guest at boot (with --pc, the VGA
+# card's, which it reports as its monitor's preferred mode over EDID). Everything downstream
 # follows from it with no further configuration: console/fbconsole.c
 # derives its text grid as width/8 x height/8, and TIOCGWINSZ hands that
 # to full-screen programs (see docs/scarf.md).
@@ -164,19 +178,31 @@ elif [ "$(uname -s)" = "Darwin" ]; then
     display_args=(-display cocoa,zoom-to-fit=on,zoom-interpolation=on)
 fi
 
+if [ "$PC_MODE" = 1 ]; then
+    machine_args=(
+        -m 4G
+        -smp 6
+        -device VGA,xres="$XRES",yres="$YRES"
+    )
+else
+    machine_args=(
+        -m 512M
+        -device virtio-gpu-pci,xres="$XRES",yres="$YRES"
+        -device virtio-keyboard-pci
+        -drive file="$DISK",if=none,id=disk0,format=raw
+        -device virtio-blk-pci,drive=disk0,disable-legacy=on
+        -device virtio-sound-pci,audiodev=snd0
+        -audiodev "$QEMU_AUDIODEV"
+    )
+fi
+
 exec qemu-system-x86_64 \
     -M q35 \
-    -m 512M \
     -no-shutdown \
     -vga none \
     ${display_args[@]+"${display_args[@]}"} \
     "${fw_args[@]}" \
     -cdrom "$ISO" \
-    -device virtio-gpu-pci,xres="$XRES",yres="$YRES" \
-    -device virtio-keyboard-pci \
-    -drive file="$DISK",if=none,id=disk0,format=raw \
-    -device virtio-blk-pci,drive=disk0,disable-legacy=on \
-    -device virtio-sound-pci,audiodev=snd0 \
-    -audiodev "$QEMU_AUDIODEV" \
+    "${machine_args[@]}" \
     -serial stdio \
     "$@"

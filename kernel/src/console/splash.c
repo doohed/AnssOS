@@ -1,15 +1,13 @@
 #include "splash.h"
 #include "braille_art.h"
 #include "fbconsole.h"
+#include "../drivers/display.h"
 #include "../drivers/pit.h"
-#include "../drivers/virtio/virtio_gpu.h"
 
 #include <stdint.h>
 
-#define GLYPH_W 8 /* Must match console/fbconsole.c's glyph size. */
-#define GLYPH_H 8
-
-#define ART_SCALE 3           /* Each braille dot becomes an ART_SCALE x ART_SCALE pixel block. */
+#define ART_SCALE 3 /* Each braille dot becomes an ART_SCALE x ART_SCALE pixel block, */
+                    /* times fbconsole's font scale so the logo grows with the text. */
 #define ART_COLOR 0x00FFFFFFu /* BGRX8888: white. */
 #define CAPTION "AnssOS"
 
@@ -77,13 +75,15 @@ static uint32_t line_cell_count(const char *line) {
     return count;
 }
 
-static void draw_pixel_block(struct virtio_gpu_fb *fb, uint32_t x, uint32_t y, uint32_t color) {
-    for (uint32_t sy = 0; sy < ART_SCALE; sy++) {
-        for (uint32_t sx = 0; sx < ART_SCALE; sx++) {
+static uint32_t art_scale; /* ART_SCALE x the console's font scale. */
+
+static void draw_pixel_block(struct framebuffer *fb, uint32_t x, uint32_t y, uint32_t color) {
+    for (uint32_t sy = 0; sy < art_scale; sy++) {
+        for (uint32_t sx = 0; sx < art_scale; sx++) {
             uint32_t px = x + sx;
             uint32_t py = y + sy;
             if (px < fb->width && py < fb->height) {
-                fb->pixels[py * fb->width + px] = color;
+                fb->pixels[(uint64_t)py * fb->pitch + px] = color;
             }
         }
     }
@@ -92,9 +92,9 @@ static void draw_pixel_block(struct virtio_gpu_fb *fb, uint32_t x, uint32_t y, u
 /* Decodes and draws SPLASH_ART centered horizontally, starting at pixel
  * row start_y. Returns the pixel row just past the art's bottom edge, so
  * the caller can place a caption/animation under it. */
-static uint32_t draw_art(struct virtio_gpu_fb *fb, uint32_t start_y) {
+static uint32_t draw_art(struct framebuffer *fb, uint32_t start_y) {
     uint32_t cell_cols = line_cell_count(SPLASH_ART[0]);
-    uint32_t art_w = cell_cols * 2 * ART_SCALE;
+    uint32_t art_w = cell_cols * 2 * art_scale;
     uint32_t start_x = (fb->width > art_w) ? (fb->width - art_w) / 2 : 0;
 
     for (uint32_t row = 0; row < SPLASH_ART_LINES; row++) {
@@ -109,15 +109,15 @@ static uint32_t draw_art(struct virtio_gpu_fb *fb, uint32_t start_y) {
                 if (!(mask & (1 << bit))) {
                     continue;
                 }
-                uint32_t px = start_x + (col * 2 + DOT_DX[bit]) * ART_SCALE;
-                uint32_t py = start_y + (row * 4 + DOT_DY[bit]) * ART_SCALE;
+                uint32_t px = start_x + (col * 2 + DOT_DX[bit]) * art_scale;
+                uint32_t py = start_y + (row * 4 + DOT_DY[bit]) * art_scale;
                 draw_pixel_block(fb, px, py, ART_COLOR);
             }
             col++;
         }
     }
 
-    return start_y + SPLASH_ART_LINES * 4 * ART_SCALE;
+    return start_y + SPLASH_ART_LINES * 4 * art_scale;
 }
 
 static uint32_t text_width(const char *s) {
@@ -128,17 +128,20 @@ static uint32_t text_width(const char *s) {
     return n;
 }
 
-void splash_show(struct virtio_gpu_fb *fb) {
-    uint32_t cols = fb->width / GLYPH_W;
+void splash_show(struct framebuffer *fb) {
+    uint32_t cell_w, cell_h, cols, rows;
+    fbconsole_cell_size(&cell_w, &cell_h);
+    fbconsole_size(&cols, &rows);
+    art_scale = ART_SCALE * (cell_w / 8);
 
-    uint32_t art_h = SPLASH_ART_LINES * 4 * ART_SCALE;
-    uint32_t caption_h = GLYPH_H * 2; /* Caption line + a blank line under the art. */
+    uint32_t art_h = SPLASH_ART_LINES * 4 * art_scale;
+    uint32_t caption_h = cell_h * 2; /* Caption line + a blank line under the art. */
     uint32_t total_h = art_h + caption_h;
     uint32_t start_y = (fb->height > total_h) ? (fb->height - total_h) / 2 : 0;
 
     uint32_t art_bottom_y = draw_art(fb, start_y);
 
-    uint32_t caption_row = art_bottom_y / GLYPH_H + 1;
+    uint32_t caption_row = art_bottom_y / cell_h + 1;
     uint32_t caption_col = (cols > text_width(CAPTION)) ? (cols - text_width(CAPTION)) / 2 : 0;
     fbconsole_draw_text_at(caption_col, caption_row, CAPTION);
 
@@ -146,12 +149,12 @@ void splash_show(struct virtio_gpu_fb *fb) {
     uint32_t dots_width = text_width(DOT_FRAMES[DOT_FRAME_COUNT - 1]);
     uint32_t dots_col = (cols > dots_width) ? (cols - dots_width) / 2 : 0;
 
-    virtio_gpu_flush();
+    display_flush();
 
     for (uint32_t cycle = 0; cycle < ANIM_CYCLES; cycle++) {
         for (uint32_t f = 0; f < DOT_FRAME_COUNT; f++) {
             fbconsole_draw_text_at(dots_col, dots_row, DOT_FRAMES[f]);
-            virtio_gpu_flush();
+            display_flush();
             pit_sleep_ms(ANIM_FRAME_MS);
         }
     }

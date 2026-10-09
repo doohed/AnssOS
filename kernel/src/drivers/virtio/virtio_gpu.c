@@ -98,7 +98,7 @@ struct __attribute__((packed)) virtio_gpu_resource_flush {
 
 static struct virtio_device vdev;
 static struct virtio_queue controlq;
-static struct virtio_gpu_fb fb;
+static struct framebuffer fb;
 
 /* Scratch request/response buffers for GPU commands. These have to be */
 /* PMM-backed (HHDM) memory, not stack/.bss, since virtqueue descriptors */
@@ -158,7 +158,7 @@ static int get_display_info(uint32_t *out_width, uint32_t *out_height) {
     return 0;
 }
 
-int virtio_gpu_init(struct virtio_gpu_fb *out_fb) {
+int virtio_gpu_init(struct framebuffer *out_fb) {
     const struct pci_device *pci =
         pci_find_device(VIRTIO_GPU_PCI_VENDOR_ID, VIRTIO_GPU_PCI_DEVICE_ID);
     if (pci == NULL) {
@@ -211,6 +211,7 @@ int virtio_gpu_init(struct virtio_gpu_fb *out_fb) {
     fb.pixels = (volatile uint32_t *)(uintptr_t)(fb_phys + hhdm_offset);
     fb.width = width;
     fb.height = height;
+    fb.pitch = width;
     memset((void *)(uintptr_t)fb.pixels, 0, fb_pages * PMM_PAGE_SIZE);
 
     struct virtio_gpu_resource_attach_backing attach_req;

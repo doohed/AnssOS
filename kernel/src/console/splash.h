@@ -1,7 +1,7 @@
 #ifndef CONSOLE_SPLASH_H
 #define CONSOLE_SPLASH_H
 
-#include "../drivers/virtio/virtio_gpu.h"
+#include "../drivers/display.h"
 
 /* Draws a centered ASCII-art logo with a small looping "." / ".." / "..."
  * activity indicator beneath it, in the spirit of what Fedora/Windows show
@@ -10,6 +10,6 @@
  * plain busy-wait spin, since there's no timer interrupt yet -- then
  * returns with the logo still on screen; the caller clears it (e.g. via
  * fbconsole_clear()) when ready to show the real console. */
-void splash_show(struct virtio_gpu_fb *fb);
+void splash_show(struct framebuffer *fb);
 
 #endif

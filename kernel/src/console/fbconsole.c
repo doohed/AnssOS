@@ -10,8 +10,15 @@
 #define FG_COLOR 0x00FFFFFFu /* BGRX8888: white. */
 #define BG_COLOR 0x00000000u /* BGRX8888: black. */
 
-static struct virtio_gpu_fb *fb;
+static struct framebuffer *fb;
+/* Each font pixel is drawn as a scale x scale block, so a cell is
+ * cell_w x cell_h screen pixels -- 8x8 glyphs at 1:1 are unreadably small
+ * on a 1080p or 4K monitor. Picked from the width in fbconsole_init(). */
+static uint32_t scale, cell_w, cell_h;
 static uint32_t cols, rows;
+/* The part of the screen drawn since the last flush, in pixels:
+ * [dirty_x0, dirty_x1) x [dirty_y0, dirty_y1), empty when x0 >= x1. */
+static uint32_t dirty_x0, dirty_y0, dirty_x1, dirty_y1;
 static uint32_t cursor_col, cursor_row;
 /* Current SGR attributes -- see handle_csi()'s 'm' case. fg/bg are
  * palette indexes, -1 for the defaults (FG_COLOR/BG_COLOR). */
@@ -46,8 +53,45 @@ static uint32_t params[MAX_PARAMS];
 static int nparams;
 static int csi_private; /* A '?' right after the '[' -- e.g. ESC[?25l. */
 
-static void put_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    fb->pixels[y * fb->width + x] = color;
+static void mark_dirty(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (dirty_x0 >= dirty_x1) {
+        dirty_x0 = x;
+        dirty_y0 = y;
+        dirty_x1 = x + w;
+        dirty_y1 = y + h;
+        return;
+    }
+    if (x < dirty_x0) {
+        dirty_x0 = x;
+    }
+    if (y < dirty_y0) {
+        dirty_y0 = y;
+    }
+    if (x + w > dirty_x1) {
+        dirty_x1 = x + w;
+    }
+    if (y + h > dirty_y1) {
+        dirty_y1 = y + h;
+    }
+}
+
+/* Makes everything drawn since the last flush visible. */
+static void flush(void) {
+    if (dirty_x0 >= dirty_x1) {
+        return;
+    }
+    display_flush_rect(dirty_x0, dirty_y0, dirty_x1 - dirty_x0, dirty_y1 - dirty_y0);
+    dirty_x0 = dirty_x1 = 0;
+}
+
+/* Fills one cell-sized-or-smaller rectangle; callers mark it dirty. */
+static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
+    for (uint32_t py = y; py < y + h; py++) {
+        volatile uint32_t *row = fb->pixels + (uint64_t)py * fb->pitch;
+        for (uint32_t px = x; px < x + w; px++) {
+            row[px] = color;
+        }
+    }
 }
 
 /* UTF-8 decoding state: a multi-byte character arrives one byte per
@@ -72,8 +116,8 @@ static const uint8_t *glyph_for(uint32_t cp) {
 
 static void draw_glyph(uint32_t col, uint32_t row, uint32_t cp) {
     const uint8_t *glyph = glyph_for(cp);
-    uint32_t base_x = col * GLYPH_W;
-    uint32_t base_y = row * GLYPH_H;
+    uint32_t base_x = col * cell_w;
+    uint32_t base_y = row * cell_h;
     /* Bold is drawn as the bright variant of a dark color: an 8x8
      * bitmap font has no bold weight. */
     int fg_i = (bold && fg_index >= 0 && fg_index < 8) ? fg_index + 8 : fg_index;
@@ -91,47 +135,55 @@ static void draw_glyph(uint32_t col, uint32_t row, uint32_t cp) {
     for (uint32_t gy = 0; gy < GLYPH_H; gy++) {
         uint8_t bits = glyph[gy];
         for (uint32_t gx = 0; gx < GLYPH_W; gx++) {
-            put_pixel(base_x + gx, base_y + gy, (bits & (1u << gx)) ? fg : bg);
+            fill_rect(base_x + gx * scale, base_y + gy * scale, scale, scale,
+                      (bits & (1u << gx)) ? fg : bg);
         }
     }
+    mark_dirty(base_x, base_y, cell_w, cell_h);
 }
 
 /* Erases `count` cells starting at (col, row), always to the background
  * colour -- deliberately not draw_glyph(' '), which would paint the
  * inverted block that reverse video turns a space into. */
 static void erase_cells(uint32_t col, uint32_t row, uint32_t count) {
-    for (uint32_t i = 0; i < count && col + i < cols; i++) {
-        uint32_t base_x = (col + i) * GLYPH_W;
-        uint32_t base_y = row * GLYPH_H;
-        for (uint32_t gy = 0; gy < GLYPH_H; gy++) {
-            for (uint32_t gx = 0; gx < GLYPH_W; gx++) {
-                put_pixel(base_x + gx, base_y + gy, BG_COLOR);
-            }
-        }
+    if (col >= cols || count == 0) {
+        return;
     }
+    if (count > cols - col) {
+        count = cols - col;
+    }
+    fill_rect(col * cell_w, row * cell_h, count * cell_w, cell_h, BG_COLOR);
+    mark_dirty(col * cell_w, row * cell_h, count * cell_w, cell_h);
 }
 
+/* Moves the text area up one row of cells. Only the rows * cell_h pixels
+ * the grid covers take part -- the leftover strip under the last row
+ * (when the height isn't a multiple of cell_h) stays blank. */
 static void scroll(void) {
-    uint32_t row_pixels = fb->width * GLYPH_H;
-    uint32_t total_pixels = fb->width * fb->height;
+    uint64_t row_pixels = (uint64_t)fb->pitch * cell_h;
+    uint64_t text_pixels = row_pixels * rows;
     memmove((void *)fb->pixels, (void *)(fb->pixels + row_pixels),
-            (total_pixels - row_pixels) * sizeof(uint32_t));
-    for (uint32_t i = total_pixels - row_pixels; i < total_pixels; i++) {
-        fb->pixels[i] = BG_COLOR;
-    }
+            (text_pixels - row_pixels) * sizeof(uint32_t));
+    fill_rect(0, (rows - 1) * cell_h, fb->width, cell_h, BG_COLOR);
+    mark_dirty(0, 0, fb->width, rows * cell_h);
 }
 
-void fbconsole_init(struct virtio_gpu_fb *the_fb) {
+void fbconsole_init(struct framebuffer *the_fb) {
     fb = the_fb;
-    cols = fb->width / GLYPH_W;
-    rows = fb->height / GLYPH_H;
+    scale = fb->width >= 3200 ? 3 : fb->width >= 1600 ? 2 : 1;
+    cell_w = GLYPH_W * scale;
+    cell_h = GLYPH_H * scale;
+    cols = fb->width / cell_w;
+    rows = fb->height / cell_h;
     fbconsole_clear();
 }
 
 void fbconsole_clear(void) {
-    for (uint32_t i = 0; i < fb->width * fb->height; i++) {
-        fb->pixels[i] = BG_COLOR;
+    if (fb == NULL) {
+        return; /* No screen -- the kernel shell's `clear` still calls this. */
     }
+    fill_rect(0, 0, fb->width, fb->height, BG_COLOR);
+    mark_dirty(0, 0, fb->width, fb->height);
     cursor_col = 0;
     cursor_row = 0;
     reverse_video = 0;
@@ -140,6 +192,11 @@ void fbconsole_clear(void) {
     bold = 0;
     dim = 0;
     pstate = P_NORMAL;
+}
+
+void fbconsole_cell_size(uint32_t *out_w, uint32_t *out_h) {
+    *out_w = cell_w;
+    *out_h = cell_h;
 }
 
 int fbconsole_size(uint32_t *out_cols, uint32_t *out_rows) {
@@ -159,7 +216,7 @@ void fbconsole_end_batch(void) {
     batching = 0;
     if (fb != NULL && batch_dirty) {
         batch_dirty = 0;
-        virtio_gpu_flush();
+        flush();
     }
 }
 
@@ -411,7 +468,7 @@ void fbconsole_write(const char *s) {
     while (*s) {
         fbconsole_putc(*s++);
     }
-    virtio_gpu_flush();
+    flush();
 }
 
 void fbconsole_kprintf_sink(char c) {
@@ -425,7 +482,8 @@ void fbconsole_kprintf_sink(char c) {
      * virtio-input keyboard), and a typed character that doesn't show up
      * on screen until Enter looks exactly like the keystroke never
      * arrived at all. Costs a couple of virtqueue round trips per
-     * character during bulk log output (e.g. `help`'s ~20 lines), which
-     * is cheap enough in practice not to matter. */
-    virtio_gpu_flush();
+     * character during bulk log output (e.g. `help`'s ~20 lines) on
+     * virtio-gpu, and a one-cell copy on a GOP framebuffer, which is
+     * cheap enough in practice not to matter. */
+    flush();
 }

@@ -5,7 +5,7 @@
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "../drivers/virtio/virtio_blk.h"
-#include "../drivers/virtio/virtio_input.h"
+#include "../drivers/input.h"
 #include "../exec/process.h"
 #include "../fs/blkfs.h"
 #include "../fs/vfs.h"
@@ -82,12 +82,11 @@ static char lower_char(char c) {
     return c;
 }
 
-/* Blocks until Enter, polling two independent input sources each
- * iteration: virtio_input_poll_char() (needs a real graphical window
- * with keyboard focus -- nothing in a headless/-display-none setup) and
- * serial_poll_char() (whatever's typed into the host terminal via
- * `-serial stdio`, a real serial console and the one that actually works
- * headless). Whichever has a byte ready wins. Recognizes both the
+/* Blocks until Enter, polling every keyboard via input_poll_char():
+ * the virtio-input keyboard (needs a real graphical window with keyboard
+ * focus -- nothing in a headless/-display-none setup) and COM1
+ * (whatever's typed into the host terminal via `-serial stdio`, a real
+ * serial console and the one that actually works headless). Recognizes both the
  * translated codes virtio_input.c produces ('\n' for Enter, '\b' for
  * Backspace) and the raw bytes a serial terminal in raw mode commonly
  * sends instead ('\r' for Enter, DEL/0x7F for Backspace). Echoes each
@@ -98,10 +97,7 @@ static void read_line(char *buf, size_t max_len) {
     size_t len = 0;
     int in_escape = 0; /* inside an ESC [ ... sequence (an arrow key etc.) */
     for (;;) {
-        int c = virtio_input_poll_char();
-        if (c < 0) {
-            c = serial_poll_char();
-        }
+        int c = input_poll_char();
         if (c < 0) {
             asm volatile("pause");
             continue;
@@ -231,7 +227,7 @@ static void cmd_clear(const char *args) {
 
 static void cmd_uname(const char *args) {
     (void)args;
-    kprintf("AnssOS x86_64 (UEFI/Limine, virtio-only)\n");
+    kprintf("AnssOS x86_64 (UEFI/Limine)\n");
 }
 
 static void cmd_meminfo(const char *args) {

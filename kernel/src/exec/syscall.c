@@ -6,7 +6,7 @@
 #include "../drivers/pit.h"
 #include "../drivers/tty.h"
 #include "../drivers/virtio/virtio_blk.h"
-#include "../drivers/virtio/virtio_input.h"
+#include "../drivers/input.h"
 #include "../drivers/virtio/virtio_snd.h"
 #include "../fs/blkfs.h"
 #include "../fs/vfs.h"
@@ -433,11 +433,7 @@ static int64_t sys_write_impl(int fd, const void *buf, size_t len) {
 }
 
 static int poll_console_char(void) {
-    int c = virtio_input_poll_char();
-    if (c < 0) {
-        c = serial_poll_char();
-    }
-    return c;
+    return input_poll_char();
 }
 
 /* fd 0 in canonical mode (the default -- see ICANON in drivers/tty.h) is
@@ -717,9 +713,8 @@ static int64_t sys_audio_close_impl(void) {
     return virtio_snd_close();
 }
 
-/* Non-blocking single-byte keypress poll -- exactly shell.c's own
- * read_line() polling pattern (virtio_input_poll_char(), falling back to
- * serial_poll_char()), lifted into a syscall instead of duplicated. This
+/* Non-blocking single-byte keypress poll -- the same input_poll_char()
+ * shell.c's own read_line() polls, lifted into a syscall. This
  * is what lets a userland player check for a control key without
  * blocking the audio-feeding loop the way a raw-mode read() would. */
 static int64_t sys_poll_key_impl(void) {
@@ -735,11 +730,7 @@ static int64_t sys_poll_key_impl(void) {
         return n == 1 ? key : (n < 0 ? -2 : -1);
     }
 
-    int c = virtio_input_poll_char();
-    if (c < 0) {
-        c = serial_poll_char();
-    }
-    return c;
+    return input_poll_char();
 }
 
 static int64_t sys_fork_impl(struct interrupt_frame *frame) {

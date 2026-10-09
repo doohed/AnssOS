@@ -6,11 +6,11 @@
 #include "boot/requests.h"
 #include "console/fbconsole.h"
 #include "console/splash.h"
+#include "drivers/display.h"
 #include "drivers/pci.h"
 #include "drivers/pit.h"
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_blk.h"
-#include "drivers/virtio/virtio_gpu.h"
 #include "drivers/virtio/virtio_input.h"
 #include "drivers/virtio/virtio_snd.h"
 #include "exec/process.h"
@@ -145,18 +145,13 @@ void kmain(void) {
     kprintf("M2 complete.\n");
 
     pci_enumerate();
-    const struct pci_device *gpu = pci_find_device(0x1af4, 0x1050);
-    if (gpu != NULL) {
-        kprintf("Found virtio-gpu-pci at %u:%u.%u (BAR0=0x%x)\n", gpu->bus, gpu->slot, gpu->func,
-                gpu->bar[0]);
-    } else {
-        kprintf("virtio-gpu-pci not found -- boot QEMU with -device virtio-gpu-pci\n");
-    }
     kprintf("M3 complete.\n");
 
-    struct virtio_gpu_fb fb;
-    if (gpu != NULL && virtio_gpu_init(&fb) == 0) {
-        kprintf("M4 complete.\n");
+    /* virtio-gpu under QEMU, the firmware's GOP framebuffer on a real PC
+     * (see drivers/display.c). */
+    struct framebuffer fb;
+    if (display_init(&fb) == 0) {
+        kprintf("Display: %s, %ux%u.\n", display_name(), fb.width, fb.height);
 
         /* fbconsole_init() must run first -- it's what sets fbconsole.c's
          * internal framebuffer pointer, which splash_show() relies on via
@@ -167,14 +162,14 @@ void kmain(void) {
         fbconsole_clear(); /* Wipe the splash before the scrolling log console takes over. */
 
         kprintf_set_sink(fbconsole_kprintf_sink);
-        fbconsole_write("AnssOS -- x86_64 / UEFI / Limine / virtio-gpu\n\n");
-        kprintf("M5 complete: framebuffer console live via virtio-gpu.\n");
+        fbconsole_write("AnssOS -- x86_64 / UEFI / Limine / ");
+        fbconsole_write(display_name());
+        fbconsole_write("\n\n");
+        kprintf("M5 complete: framebuffer console live via %s.\n", display_name());
 
         /* Paint a small gradient swatch in the bottom-right corner --
-         * proof of direct pixel writes through the driver (not just text),
-         * and that this is virtio-gpu rendering, not the bootloader's boot
-         * framebuffer, since we never touch Limine's framebuffer_request
-         * pointer here. Kept clear of the console's text region above. */
+         * proof of direct pixel writes through the display (not just
+         * text). Kept clear of the console's text region above. */
         uint32_t swatch_w = fb.width / 6;
         uint32_t swatch_h = fb.height / 6;
         uint32_t ox = fb.width - swatch_w;
@@ -184,119 +179,121 @@ void kmain(void) {
                 uint32_t r = (x * 255) / swatch_w;
                 uint32_t g = (y * 255) / swatch_h;
                 uint32_t b = 255 - r;
-                fb.pixels[(oy + y) * fb.width + (ox + x)] = (b << 16) | (g << 8) | r; /* BGRX8888 */
+                fb.pixels[(uint64_t)(oy + y) * fb.pitch + (ox + x)] =
+                    (b << 16) | (g << 8) | r; /* BGRX8888 */
             }
         }
-        virtio_gpu_flush();
+        display_flush();
     } else {
-        kprintf("Skipping M4/M5 (no virtio-gpu-pci device).\n");
+        kprintf("Skipping M5 (no display: no virtio-gpu, no firmware framebuffer).\n");
     }
 
+    /* The keyboard is optional: COM1 always works as one (see
+     * drivers/input.c), and a real PC with no keyboard driver yet should
+     * still reach the shell, if only to show that everything else did. */
     if (virtio_input_init() == 0) {
         kprintf("M6 complete: virtio-input keyboard ready.\n");
+    } else {
+        kprintf("No keyboard driver for this machine -- input only over COM1, if it has one.\n");
+    }
 
-        vfs_init();
-        kprintf("M7 complete: in-memory filesystem ready.\n");
+    vfs_init();
+    kprintf("M7 complete: in-memory filesystem ready.\n");
 
-        if (virtio_blk_init() == 0) {
-            blkfs_load(); /* No-op (not an error) on a blank/unformatted disk. */
-            kprintf("M9 complete: persistent storage ready.\n");
-        } else {
-            kprintf(
-                "Skipping M9 (no virtio-blk device) -- filesystem stays in-memory only. "
-                "Boot QEMU with -device virtio-blk-pci for persistence.\n");
-        }
-
-        if (virtio_snd_init() == 0) {
-            kprintf("M17 complete: virtio-sound ready.\n");
-        } else {
-            kprintf(
-                "Skipping M17 (no virtio-sound device) -- audio playback unavailable. Boot "
-                "QEMU with -device virtio-sound-pci for `play`.\n");
-        }
-
-        /* M10/M11 self-test fixtures: the hand-rolled userland test
-         * payloads (see userland/, embedded into the kernel image via
-         * exec/userland_blobs.S) get written fresh onto the in-memory VFS
-         * on every boot, so `run <name>.bin` always has something to load
-         * without any host-side provisioning step -- same idea as the
-         * PMM/VMM self-tests above, just landing on the filesystem
-         * instead of just printing a result. Not persisted to disk;
-         * there's nothing to save here. filetest.txt is filetest.bin's
-         * own fixture -- a known file for it to open/read/write/lseek
-         * against. dirtest.bin needs no fixture -- it creates its own
-         * directory and file via mkdir()/O_CREAT. */
-        /* Programs live in /bin, which the shell searches for bare
-         * command names (see shell.c's resolve_program()) -- so `scarf`
-         * works from any directory, not just the one holding it. */
-        vfs_mkdir(vfs_root(), "bin");
-        struct vnode *bin = vfs_resolve(vfs_root(), "/bin");
-        if (bin == NULL) {
-            bin = vfs_root(); /* mkdir failed -- fall back to the old layout. */
-        }
-
-        vfs_write_bytes(bin, "hello", hello_elf_start, (size_t)(hello_elf_end - hello_elf_start));
-        vfs_write_bytes(bin, "crash", crash_elf_start, (size_t)(crash_elf_end - crash_elf_start));
-        vfs_write_bytes(bin, "malloctest", malloctest_elf_start,
-                        (size_t)(malloctest_elf_end - malloctest_elf_start));
-        vfs_write_bytes(bin, "filetest", filetest_elf_start,
-                        (size_t)(filetest_elf_end - filetest_elf_start));
-        vfs_write_file(vfs_root(), "filetest.txt", "hello file test\n", 0);
-        vfs_write_bytes(bin, "dirtest", dirtest_elf_start,
-                        (size_t)(dirtest_elf_end - dirtest_elf_start));
-        vfs_write_bytes(bin, "forktest", forktest_elf_start,
-                        (size_t)(forktest_elf_end - forktest_elf_start));
-        vfs_write_bytes(bin, "forkchild", forkchild_elf_start,
-                        (size_t)(forkchild_elf_end - forkchild_elf_start));
-        vfs_write_bytes(bin, "preempttest", preempttest_elf_start,
-                        (size_t)(preempttest_elf_end - preempttest_elf_start));
-        vfs_write_bytes(bin, "termtest", termtest_elf_start,
-                        (size_t)(termtest_elf_end - termtest_elf_start));
-        vfs_write_bytes(bin, "readdirtest", readdirtest_elf_start,
-                        (size_t)(readdirtest_elf_end - readdirtest_elf_start));
-        vfs_write_bytes(bin, "pipetest", pipetest_elf_start,
-                        (size_t)(pipetest_elf_end - pipetest_elf_start));
-        /* Not a self-test fixture -- sh.bin is a real tool (`run sh`, or
-         * spawned as a tile.c pane), embedded the same way scarf/play
-         * are. */
-        vfs_write_bytes(bin, "sh", sh_elf_start, (size_t)(sh_elf_end - sh_elf_start));
-        vfs_write_bytes(bin, "tile", tile_elf_start, (size_t)(tile_elf_end - tile_elf_start));
-        /* Not a self-test fixture like the rest -- scarf.bin is an actual
-         * tool (`run scarf.bin`), embedded the same way for the same
-         * reason: there's no host-side way to get a file onto the VFS. */
-        vfs_write_bytes(bin, "scarf", scarf_elf_start, (size_t)(scarf_elf_end - scarf_elf_start));
-        /* Likewise play.bin -- plus testtone.wav, a synthesized fixture
-         * (scripts/gen-test-tone.py) so `play testtone.wav` works out of
-         * the box with no host-side file provisioning step. */
-        vfs_write_bytes(bin, "play", play_elf_start, (size_t)(play_elf_end - play_elf_start));
-        vfs_write_bytes(vfs_root(), "testtone.wav", testtone_wav_start,
-                        (size_t)(testtone_wav_end - testtone_wav_start));
-
-        /* Boot into the userland shell, /bin/sh (userland/rust/sh/). If
-         * it ever exits -- `exit`, or a crash -- fall back to the
-         * kernel-resident shell below, which also has the kernel
-         * diagnostics (meminfo, lspci, crash, reboot, ...) sh can't
-         * reach; `sh` there starts it again. */
-        struct vnode *sh = vfs_resolve(vfs_root(), "/bin/sh");
-        if (sh != NULL && sh->type == VNODE_FILE) {
-            const char *const sh_argv[] = {"sh"};
-            if (process_spawn(sh->data, sh->size, 1, sh_argv, vfs_root(), KERNEL_PARENT_PID) >= 0) {
-                scheduler_run_until(-1);
-            }
-            kprintf("\x1b[0m\nsh exited -- this is the kernel shell (`sh` starts it again)\n");
-        }
-
-        /* The deliberate #DE self-test that used to always run here
-         * (proving the M1 exception handler works) is now the shell's
-         * `crash` builtin -- trigger it on demand instead of
-         * automatically, since the handler halts forever and we want an
-         * interactive prompt instead. shell_run() never returns. */
-        shell_run();
+    if (virtio_blk_init() == 0) {
+        blkfs_load(); /* No-op (not an error) on a blank/unformatted disk. */
+        kprintf("M9 complete: persistent storage ready.\n");
     } else {
         kprintf(
-            "Skipping M6 and the shell (no virtio-input keyboard) -- boot QEMU with "
-            "-device virtio-keyboard-pci\n");
+            "Skipping M9 (no virtio-blk device) -- filesystem stays in-memory only. "
+            "Boot QEMU with -device virtio-blk-pci for persistence.\n");
     }
+
+    if (virtio_snd_init() == 0) {
+        kprintf("M17 complete: virtio-sound ready.\n");
+    } else {
+        kprintf(
+            "Skipping M17 (no virtio-sound device) -- audio playback unavailable. Boot "
+            "QEMU with -device virtio-sound-pci for `play`.\n");
+    }
+
+    /* M10/M11 self-test fixtures: the hand-rolled userland test
+     * payloads (see userland/, embedded into the kernel image via
+     * exec/userland_blobs.S) get written fresh onto the in-memory VFS
+     * on every boot, so `run <name>.bin` always has something to load
+     * without any host-side provisioning step -- same idea as the
+     * PMM/VMM self-tests above, just landing on the filesystem
+     * instead of just printing a result. Not persisted to disk;
+     * there's nothing to save here. filetest.txt is filetest.bin's
+     * own fixture -- a known file for it to open/read/write/lseek
+     * against. dirtest.bin needs no fixture -- it creates its own
+     * directory and file via mkdir()/O_CREAT. */
+    /* Programs live in /bin, which the shell searches for bare
+     * command names (see shell.c's resolve_program()) -- so `scarf`
+     * works from any directory, not just the one holding it. */
+    vfs_mkdir(vfs_root(), "bin");
+    struct vnode *bin = vfs_resolve(vfs_root(), "/bin");
+    if (bin == NULL) {
+        bin = vfs_root(); /* mkdir failed -- fall back to the old layout. */
+    }
+
+    vfs_write_bytes(bin, "hello", hello_elf_start, (size_t)(hello_elf_end - hello_elf_start));
+    vfs_write_bytes(bin, "crash", crash_elf_start, (size_t)(crash_elf_end - crash_elf_start));
+    vfs_write_bytes(bin, "malloctest", malloctest_elf_start,
+                    (size_t)(malloctest_elf_end - malloctest_elf_start));
+    vfs_write_bytes(bin, "filetest", filetest_elf_start,
+                    (size_t)(filetest_elf_end - filetest_elf_start));
+    vfs_write_file(vfs_root(), "filetest.txt", "hello file test\n", 0);
+    vfs_write_bytes(bin, "dirtest", dirtest_elf_start,
+                    (size_t)(dirtest_elf_end - dirtest_elf_start));
+    vfs_write_bytes(bin, "forktest", forktest_elf_start,
+                    (size_t)(forktest_elf_end - forktest_elf_start));
+    vfs_write_bytes(bin, "forkchild", forkchild_elf_start,
+                    (size_t)(forkchild_elf_end - forkchild_elf_start));
+    vfs_write_bytes(bin, "preempttest", preempttest_elf_start,
+                    (size_t)(preempttest_elf_end - preempttest_elf_start));
+    vfs_write_bytes(bin, "termtest", termtest_elf_start,
+                    (size_t)(termtest_elf_end - termtest_elf_start));
+    vfs_write_bytes(bin, "readdirtest", readdirtest_elf_start,
+                    (size_t)(readdirtest_elf_end - readdirtest_elf_start));
+    vfs_write_bytes(bin, "pipetest", pipetest_elf_start,
+                    (size_t)(pipetest_elf_end - pipetest_elf_start));
+    /* Not a self-test fixture -- sh.bin is a real tool (`run sh`, or
+     * spawned as a tile.c pane), embedded the same way scarf/play
+     * are. */
+    vfs_write_bytes(bin, "sh", sh_elf_start, (size_t)(sh_elf_end - sh_elf_start));
+    vfs_write_bytes(bin, "tile", tile_elf_start, (size_t)(tile_elf_end - tile_elf_start));
+    /* Not a self-test fixture like the rest -- scarf.bin is an actual
+     * tool (`run scarf.bin`), embedded the same way for the same
+     * reason: there's no host-side way to get a file onto the VFS. */
+    vfs_write_bytes(bin, "scarf", scarf_elf_start, (size_t)(scarf_elf_end - scarf_elf_start));
+    /* Likewise play.bin -- plus testtone.wav, a synthesized fixture
+     * (scripts/gen-test-tone.py) so `play testtone.wav` works out of
+     * the box with no host-side file provisioning step. */
+    vfs_write_bytes(bin, "play", play_elf_start, (size_t)(play_elf_end - play_elf_start));
+    vfs_write_bytes(vfs_root(), "testtone.wav", testtone_wav_start,
+                    (size_t)(testtone_wav_end - testtone_wav_start));
+
+    /* Boot into the userland shell, /bin/sh (userland/rust/sh/). If
+     * it ever exits -- `exit`, or a crash -- fall back to the
+     * kernel-resident shell below, which also has the kernel
+     * diagnostics (meminfo, lspci, crash, reboot, ...) sh can't
+     * reach; `sh` there starts it again. */
+    struct vnode *sh = vfs_resolve(vfs_root(), "/bin/sh");
+    if (sh != NULL && sh->type == VNODE_FILE) {
+        const char *const sh_argv[] = {"sh"};
+        if (process_spawn(sh->data, sh->size, 1, sh_argv, vfs_root(), KERNEL_PARENT_PID) >= 0) {
+            scheduler_run_until(-1);
+        }
+        kprintf("\x1b[0m\nsh exited -- this is the kernel shell (`sh` starts it again)\n");
+    }
+
+    /* The deliberate #DE self-test that used to always run here
+     * (proving the M1 exception handler works) is now the shell's
+     * `crash` builtin -- trigger it on demand instead of
+     * automatically, since the handler halts forever and we want an
+     * interactive prompt instead. shell_run() never returns. */
+    shell_run();
 
     hcf();
 }
