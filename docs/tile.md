@@ -40,16 +40,8 @@ Rewritten in Rust with ratatui (`userland/rust/tile/`, M25). Each pane
 has its own terminal emulator, so anything that runs on the console
 runs in a pane too, including `scarf` and `play`.
 
-```
- tile                                               pane 1 of 4     <- solid header
- # pane 1 ####################### - pane 2 -----------------------  <- focused pane's title solid,
- sh:/> ls                        # sh:/>                               others a rule
-   bin/                          #
- sh:/> _                         #                                  <- solid divider
- - pane 3 ----------------------- - pane 4 -----------------------
- ...                             # ...
- ^B 1-4  focus   ^B o  next   ^B ^B  send ^B   ^B q  quit           <- key hints
-```
+A solid header, a title per pane (the focused one solid, the others a
+rule), solid dividers between panes, and key hints along the bottom.
 
 | Key | Action |
 |---|---|

@@ -19,20 +19,9 @@ shell's cwd.
 
 ## Screen
 
-```
- /docs/                 # notes.txt [+]                         <- pane titles: the focused
-                        #                                          one is a solid bar
-                        #
-   ../                  #   1 hello world
- #######################
- ## sub/ ###############    2 second line                          <- sidebar selection
- #######################
-   notes.txt            #   3
- NORMAL                                          ln 2/40  col 5  <- status bar
- :w                                                              <- messages / command line
-```
-
-(`#` stands for a solid cell.) It uses the same visual language as
+A file sidebar on the left and the file on the right, each with a
+title; a status bar and the message/command line along the bottom. It
+uses the same visual language as
 [play](play.md#screen): monochrome, reverse video only, where a
 reverse-video space is a solid cell. So these are all solid:
 
@@ -52,7 +41,7 @@ The 8×8 font has no leading, so adjacent text lines touch. On a console
 of 50 rows or more (every resolution `run-qemu.sh` offers), text and
 sidebar lines are double-spaced. The sidebar selection then also takes
 the blank rows above and below its entry, so its text sits centred in a
-3-row band. A smaller console (the 80×24 fallback without virtio-gpu)
+3-row band. A smaller console (the 80×24 fallback without a screen)
 stays single-spaced rather than halving what fits.
 
 Bytes outside printable ASCII show as `?`, and a tab shows as one space;
@@ -109,8 +98,7 @@ column 0 joins with the previous line, and `Tab` inserts four spaces.
 ## Design notes
 
 **Structure.** scarf is a member of the `userland/rust/` Cargo workspace
-(see [play.md](play.md#design-notes) for how Rust programs are built and
-linked). It's a `no_std` staticlib split into:
+(see [rust.md](rust.md) for how Rust programs are built and linked). It's a `no_std` staticlib split into:
 
 - `buffer.rs`: the text (lines of bytes), loading and saving;
 - `sidebar.rs`: one directory's listing and the selection;
@@ -119,7 +107,7 @@ linked). It's a `no_std` staticlib split into:
 
 It shares the `anssos` runtime (libc FFI: files, `chdir`/`getcwd`,
 directory listing, raw mode) and `anssos-tui` (the ratatui console
-backend) with `play`.
+backend) with `play` and `tile`.
 
 **The cursor is drawn as a solid cell** rather than the terminal's own
 cursor, because that renders identically on the framebuffer console and

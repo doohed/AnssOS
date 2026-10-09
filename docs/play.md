@@ -11,27 +11,10 @@ written in Rust (`userland/rust/play/`). It plays a playlist of files over the
 
 ## Screen
 
-```
- AnssOS play                                              track 2 of 3    <- solid header bar
-
-       song1.mp3
-
-       MP3 320 kbps   48 kHz   stereo
-
-       ----     ----                                                      <- peak markers
-       ####     ####  ----
-       #### #### #### #### ----      ----                                 <- solid bars
-       #### #### #### #### #### #### ####  ####
-       60 Hz         210           735          2k          7 kHz
-
-       01:02  ##############-------------------------------------  03:45
-
-       > PLAYING                              VOL ##########---------- 100%
-
- SPACE  pause   N  next   Q  quit   +/-  volume                           <- keycaps reversed
-```
-
-(`#` stands for a solid cell here.) The console's font (`font8x8_basic`)
+A solid header bar with the track number; the file name and format; a
+spectrum analyzer with peak markers; a progress bar with elapsed and
+total time; the play state and a volume gauge; and a footer of key
+hints in reversed keycaps. The console's font (`font8x8_basic`)
 is ASCII-only, and this screen is drawn in monochrome: reverse video
 (`ESC[7m`) only, no colors. (The console has since gained the 16 ANSI
 colors, see `docs/architecture.md`'s console section; `play` predates
@@ -110,56 +93,19 @@ on the Rust side).
 
 ## Design notes
 
-**No Rust std.** AnssOS has no Rust standard library, so Rust userland
-is `#![no_std]` and lives in one Cargo workspace, `userland/rust/`, with
-one lockfile and one `target/`:
+`play` is a member of the Rust userland workspace; see [rust.md](rust.md)
+for how Rust programs are built and linked, the shared `anssos` runtime,
+and the ratatui backend it draws through. Its own sources:
 
 ```
-userland/rust/
-  Cargo.toml          workspace: members, shared deps, release profile
-  .cargo/config.toml  target = x86_64-unknown-none
-  anssos/             runtime crate shared by every Rust program
-  tui/                anssos-tui: the ratatui console backend + setup/teardown
-  play/
-    src/              the player (lib.rs, source.rs, spectrum.rs, ui.rs)
-    c/mp3.c           play's own C: compiles minimp3's implementation
-    vendor/minimp3/   minimp3, vendored unmodified (CC0)
+userland/rust/play/
+  src/              the player (lib.rs, source.rs, spectrum.rs, ui.rs)
+  c/mp3.c           play's own C: compiles minimp3's implementation
+  vendor/minimp3/   minimp3, vendored unmodified (CC0)
 ```
 
-Each program is a **static library** for `x86_64-unknown-none`.
-`scripts/build-userland.sh` builds the workspace with `cargo build
---release --manifest-path ... --config ...`, which works from any
-directory, then links `libplay.a` with `crt0.o`, the hand-written C libc
-and `c/mp3.c`, using the same `link.ld` as every C program. `crt0` calls
-the `main` that `play` exports with `#[unsafe(no_mangle)] extern "C"`,
-just as it would a C program's. The C parts are compiled by the build
-script, not by Cargo, so they get exactly the same `CC`/`CFLAGS` as the
-rest of userland.
-
-The `anssos` runtime crate holds everything that isn't specific to
-`play`:
-
-- FFI bindings to the libc (`read`/`open`/`lseek`/`ioctl`/termios/the
-  audio syscalls/`poll_key`), wrapped in RAII types (`File`, `Audio` and
-  `RawMode` close or restore on drop).
-- The global allocator, on the libc's `malloc()`/`free()`. That `malloc`
-  only promises its own alignment, so every block is over-allocated and
-  the original pointer is stashed just below the aligned one.
-- The panic handler, which resets console attributes, shows the cursor,
-  prints the panic and exits with code 101.
-
-A new Rust program is a new workspace member that depends on `anssos`,
-plus one `build_program` line in `build-userland.sh`.
-
-**Ratatui without std.** Ratatui 0.30 supports `no_std`
-(`default-features = false`; it needs `alloc`). Its built-in backends
-(crossterm and the rest) need std, so `tui/src/backend.rs` (the
-`anssos-tui` crate, shared with [scarf](scarf.md)) implements
-`ratatui::backend::Backend` for the AnssOS console. It queues output into
-one buffer and writes it with a single `write()` per frame. It emits only
-the escapes the console understands: CUP, ED/EL, and SGR 7/0. CUP is
-skipped for consecutive cells on the same row. Any non-ASCII symbol is
-mapped to an ASCII stand-in, which is only a fallback.
+`build-userland.sh` links `libplay.a` with `crt0.o`, the C libc and
+`c/mp3.c`.
 
 The screen (`play/src/ui.rs`) draws through ratatui's `Frame`/`Buffer`,
 `Line` and `Span`. The spectrum and the meters are small custom
@@ -167,11 +113,6 @@ widgets, because the stock `BarChart`/`Gauge` assume block glyphs or
 a color palette `play` doesn't use. Geometry is plain `Rect` arithmetic
 rather than ratatui's constraint-solver `Layout`: the crate is
 soft-float, and the layout depends only on the terminal size.
-
-**The bottom row stays empty.** The console wraps the cursor as soon as
-a glyph lands in the last column; it has no deferred wrap. Writing the
-bottom-right cell would therefore scroll the whole screen up a line, so
-the backend reports one row fewer than the console has.
 
 **Soft-float.** `x86_64-unknown-none` is a soft-float target, so the
 little float math ratatui does runs in software. `play` avoids ratatui's
