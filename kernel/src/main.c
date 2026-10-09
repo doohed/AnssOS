@@ -13,6 +13,7 @@
 #include "drivers/virtio/virtio_gpu.h"
 #include "drivers/virtio/virtio_input.h"
 #include "drivers/virtio/virtio_snd.h"
+#include "exec/process.h"
 #include "exec/userland_blobs.h"
 #include "fs/blkfs.h"
 #include "fs/vfs.h"
@@ -270,6 +271,20 @@ void kmain(void) {
         vfs_write_bytes(bin, "play", play_elf_start, (size_t)(play_elf_end - play_elf_start));
         vfs_write_bytes(vfs_root(), "testtone.wav", testtone_wav_start,
                         (size_t)(testtone_wav_end - testtone_wav_start));
+
+        /* Boot into the userland shell, /bin/sh (userland/rust/sh/). If
+         * it ever exits -- `exit`, or a crash -- fall back to the
+         * kernel-resident shell below, which also has the kernel
+         * diagnostics (meminfo, lspci, crash, reboot, ...) sh can't
+         * reach; `sh` there starts it again. */
+        struct vnode *sh = vfs_resolve(vfs_root(), "/bin/sh");
+        if (sh != NULL && sh->type == VNODE_FILE) {
+            const char *const sh_argv[] = {"sh"};
+            if (process_spawn(sh->data, sh->size, 1, sh_argv, vfs_root(), KERNEL_PARENT_PID) >= 0) {
+                scheduler_run_until(-1);
+            }
+            kprintf("\x1b[0m\nsh exited -- this is the kernel shell (`sh` starts it again)\n");
+        }
 
         /* The deliberate #DE self-test that used to always run here
          * (proving the M1 exception handler works) is now the shell's

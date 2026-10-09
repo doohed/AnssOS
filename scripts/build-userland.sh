@@ -74,15 +74,15 @@ cargo build --release --quiet \
     --config userland/rust/.cargo/config.toml
 RUST_OUT=rust/target/x86_64-unknown-none/release
 
+build_program sh "$RUST_OUT/libsh.a"
 build_program play rust/play/c/mp3.c "$RUST_OUT/libplay.a"
 build_program scarf "$RUST_OUT/libscarf.a"
 build_program tile "$RUST_OUT/libtile.a"
 build_program pipetest pipetest.c
-build_program sh sh.c
 
 # Not a userland ELF -- a synthesized WAV fixture for `play` (see the
 # script itself for why), dropped at the same src/exec/*.bin location
 # userland_blobs.S expects.
-python3 "$(dirname "$0")/gen-test-tone.py"
+python3 scripts/gen-test-tone.py # relative to the repo root, where the cd above put us
 
 echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest,scarf,play,pipetest,sh,tile}.elf"

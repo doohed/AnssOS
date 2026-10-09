@@ -1,14 +1,12 @@
 # sh and tile
 
-Two pieces (M19-M21, tile rewritten in M25) that together make real
-tiling terminals possible: `userland/sh.c`, a small userland shell, and
-`tile` (`userland/rust/tile/`), a fixed-grid multiplexer that runs
-multiple independent `sh` instances side by side.
+`tile` (`userland/rust/tile/`) is a fixed-grid multiplexer that runs
+several independent [sh](sh.md) shells side by side (M19-M21, rewritten
+in M25).
 
 ```
-AnssOS:/> run sh                 # a standalone userland shell
-AnssOS:/> tile                   # two sh panes, side by side (default)
-AnssOS:/> tile 4                 # a 2x2 grid of four
+> tile                   # two panes, side by side (default)
+> tile 4                 # a 2x2 grid of four
 ```
 
 ## Why this needed pipes first
@@ -26,28 +24,15 @@ busy-spin waiting on another process would deadlock) shaped the whole
 design.
 
 There was also no userland shell to `exec()` into a pane at all —
-`kernel/src/shell/shell.c` is kernel-resident. `sh` ports a deliberately
-narrow subset of it.
+`kernel/src/shell/shell.c` is kernel-resident. The first `sh` (C, M20)
+ported a narrow subset of it; the current one ([sh.md](sh.md)) has every
+file command and is what the system boots into.
 
 ## sh
 
-`cd`, `pwd`, `ls`, `cat`, `write <file> <text>`, `create dir|file
-<name>`, `echo`, `clear`, `help`, and running any program (bare name
-searches cwd then `/bin`, exactly `shell.c`'s own `resolve_program()`
-logic, rewritten against syscalls). **Not implemented**: `delete`,
-`copy`, `move`, `sync` (need `unlink`/`rename`/an explicit sync
-syscall — none exist), and every kernel-debug builtin (`meminfo`,
-`lspci`, `uptime`, `uname`, `crash`, `reboot`, `halt` — kernel-internal
-introspection with no userland path). The kernel shell remains the tool
-for real file management; `sh` is built for running programs and light
-navigation inside a pane.
-
-Its `read_line()` reads one byte at a time in a loop that treats a `0`
-return as "no data yet, yield and try again" — this works identically whether
-fd 0 is the physical console (which never actually returns 0 in raw
-mode, it blocks internally instead) or a pipe (which does, per
-[syscalls.md](syscalls.md#pipes-m19)'s non-blocking design) — one code
-path, not two.
+Each pane runs the AnssOS shell; see [sh.md](sh.md). It knows nothing
+special about panes: its window size, the colors, and its input all
+arrive through the pane (see "How a pane works" below).
 
 ## tile
 
@@ -92,8 +77,8 @@ the full bottom row; four make a 2x2 grid. A pane whose shell exits shows
    the pane's size, and lays itself out inside it.
 3. **Output** (`vt.rs`). Everything a pane's programs write is fed
    through a terminal emulator that understands exactly the console's
-   ANSI subset: cursor positioning, erase, reverse video, and immediate
-   wrap with scroll at the bottom. Each pane is a grid of cells. A
+   ANSI subset: cursor positioning, erase, the 16 colors, bold, dim and
+   reverse video, and immediate wrap with scroll at the bottom. Each pane is a grid of cells. A
    program's escape codes can therefore only ever affect its own pane;
    `clear` in a pane clears that pane.
 4. **Drawing** (`ui.rs`). All the panes' grids, the titles, the dividers

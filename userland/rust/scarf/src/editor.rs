@@ -16,6 +16,18 @@ const ESC: u8 = 0x1b;
 const TAB_STOP: usize = 4;
 const CMD_MAX: usize = 127;
 
+/// Keys that arrive as escape sequences (arrows, Home/End, Delete).
+#[derive(Clone, Copy)]
+pub enum Special {
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    Delete,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Normal,
@@ -176,6 +188,51 @@ impl Editor {
             (Mode::Insert, _) => self.key_insert(c),
             (Mode::Normal, Focus::Sidebar) => self.key_sidebar(c),
             (Mode::Normal, Focus::Editor) => self.key_normal(c),
+        }
+    }
+
+    /// An arrow/Home/End/Delete key. In normal mode and the sidebar it's
+    /// the matching vim key; in insert mode it moves without leaving
+    /// insert mode; the command line ignores it.
+    pub fn special(&mut self, k: Special) {
+        match (self.mode, self.focus) {
+            (Mode::Command, _) => {}
+            (Mode::Insert, _) => {
+                let len = self.line().len();
+                match k {
+                    Special::Left => self.cx = self.cx.saturating_sub(1),
+                    Special::Right => self.cx = (self.cx + 1).min(len),
+                    Special::Home => self.cx = 0,
+                    Special::End => self.cx = len,
+                    Special::Up | Special::Down => {
+                        let up = matches!(k, Special::Up);
+                        if up && self.cy > 0 {
+                            self.cy -= 1;
+                        } else if !up && self.cy + 1 < self.buf.lines.len() {
+                            self.cy += 1;
+                        }
+                        self.clamp_cx();
+                    }
+                    Special::Delete => {
+                        if self.cx < len {
+                            let cx = self.cx;
+                            self.line_mut().remove(cx);
+                        }
+                    }
+                }
+            }
+            (Mode::Normal, _) => {
+                let key = match k {
+                    Special::Up => b'k',
+                    Special::Down => b'j',
+                    Special::Left => b'h',
+                    Special::Right => b'l',
+                    Special::Home => b'0',
+                    Special::End => b'$',
+                    Special::Delete => b'x',
+                };
+                self.key(key);
+            }
         }
     }
 

@@ -5,7 +5,8 @@
 #            and the panic handler. There is no Rust std for AnssOS.
 #   tui/     anssos-tui: ratatui on AnssOS -- the console backend, plus
 #            setup/teardown shared by full-screen programs.
-#   play/    the WAV/MP3 player, built as a staticlib.
+#   sh/      the shell the system boots into, built as a staticlib.
+#   play/    the WAV/MP3 player, also a staticlib.
 #   scarf/   the vim-style editor with a file sidebar, also a staticlib.
 #   tile/    the terminal multiplexer (a VT per pane), also a staticlib.
 #
@@ -17,7 +18,7 @@
 #       --config userland/rust/.cargo/config.toml
 # or plain `cargo build --release` from inside this directory.
 [workspace]
-members = ["anssos", "tui", "play", "scarf", "tile"]
+members = ["anssos", "tui", "sh", "play", "scarf", "tile"]
 resolver = "3"
 
 [workspace.package]

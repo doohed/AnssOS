@@ -49,6 +49,26 @@ int mkdir(const char *path) {
     return (int)syscall3(83, (long)(unsigned long)path, 0, 0);
 }
 
+int unlink(const char *path) {
+    return (int)syscall3(87, (long)(unsigned long)path, 0, 0);
+}
+
+int rename(const char *src, const char *dest) {
+    return (int)syscall3(82, (long)(unsigned long)src, (long)(unsigned long)dest, 0);
+}
+
+int copy_path(const char *src, const char *dest) {
+    return (int)syscall3(905, (long)(unsigned long)src, (long)(unsigned long)dest, 0);
+}
+
+int sync(void) {
+    return (int)syscall3(162, 0, 0, 0);
+}
+
+int clock_gettime(int clock, struct timespec *ts) {
+    return (int)syscall3(228, clock, (long)(unsigned long)ts, 0);
+}
+
 /* fork()'s "returns twice" semantics fall out of this being an ordinary
  * function call with no special handling needed here at all: the kernel
  * builds the child's very first resume to look exactly like it's

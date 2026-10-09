@@ -60,6 +60,13 @@ struct Dirent {
 }
 const DT_DIR: u8 = 4;
 
+#[repr(C)]
+struct Timespec {
+    tv_sec: c_long,
+    tv_nsec: c_long,
+}
+const CLOCK_MONOTONIC: c_int = 1;
+
 /// Opaque: the libc's DIR.
 #[repr(C)]
 struct Dir {
@@ -88,6 +95,17 @@ unsafe extern "C" {
     fn c_getcwd(buf: *mut c_char, size: c_ulong) -> c_int;
     fn opendir(path: *const c_char) -> *mut Dir;
     fn readdir(dir: *mut Dir) -> *mut Dirent;
+    fn getdents(fd: c_int, out: *mut Dirent) -> c_long;
+    #[link_name = "mkdir"]
+    fn c_mkdir(path: *const c_char) -> c_int;
+    #[link_name = "unlink"]
+    fn c_unlink(path: *const c_char) -> c_int;
+    #[link_name = "rename"]
+    fn c_rename(src: *const c_char, dest: *const c_char) -> c_int;
+    fn copy_path(src: *const c_char, dest: *const c_char) -> c_int;
+    #[link_name = "sync"]
+    fn c_sync() -> c_int;
+    fn clock_gettime(clock: c_int, ts: *mut Timespec) -> c_int;
     fn closedir(dir: *mut Dir) -> c_int;
     fn ioctl(fd: c_int, request: c_ulong, argp: *mut c_void) -> c_long;
     fn tcgetattr(fd: c_int, t: *mut Termios) -> c_int;
@@ -288,6 +306,74 @@ pub fn getcwd() -> Option<String> {
     s.to_str().ok().map(String::from)
 }
 
+// ---------- paths as &str ----------
+//
+// The filesystem calls below take Rust strings and do the NUL
+// termination themselves; a path with an interior NUL simply fails.
+
+fn cpath(path: &str) -> Option<CString> {
+    CString::new(path).ok()
+}
+
+/// Whether `path` names anything (a file or a directory).
+pub fn exists(path: &str) -> bool {
+    cpath(path).and_then(|p| File::open(&p)).is_some()
+}
+
+/// Whether `path` is a directory -- without chdir()ing to find out:
+/// getdents() succeeds on a directory fd and fails on a file's.
+pub fn is_dir(path: &str) -> bool {
+    let Some(p) = cpath(path) else { return false };
+    let Some(f) = File::open(&p) else { return false };
+    let mut e = Dirent { d_type: 0, d_name: [0; 64] };
+    unsafe { getdents(f.0, &mut e) >= 0 }
+}
+
+pub fn mkdir(path: &str) -> bool {
+    cpath(path).is_some_and(|p| unsafe { c_mkdir(p.as_ptr()) == 0 })
+}
+
+/// Creates an empty file, or empties an existing one.
+pub fn create_file(path: &str) -> bool {
+    cpath(path).and_then(|p| File::create(&p)).is_some()
+}
+
+/// Removes a file, or a directory and everything in it.
+pub fn unlink(path: &str) -> bool {
+    cpath(path).is_some_and(|p| unsafe { c_unlink(p.as_ptr()) == 0 })
+}
+
+/// Moves/renames; a `dest` that's an existing directory means into it.
+pub fn rename(src: &str, dest: &str) -> bool {
+    match (cpath(src), cpath(dest)) {
+        (Some(s), Some(d)) => unsafe { c_rename(s.as_ptr(), d.as_ptr()) == 0 },
+        _ => false,
+    }
+}
+
+/// Copies a file or a whole directory tree; a `dest` that's an existing
+/// directory means into it.
+pub fn copy(src: &str, dest: &str) -> bool {
+    match (cpath(src), cpath(dest)) {
+        (Some(s), Some(d)) => unsafe { copy_path(s.as_ptr(), d.as_ptr()) == 0 },
+        _ => false,
+    }
+}
+
+/// Writes the whole filesystem to disk. False when there's no disk.
+pub fn sync() -> bool {
+    unsafe { c_sync() == 0 }
+}
+
+/// Milliseconds since boot (10 ms resolution).
+pub fn now_ms() -> u64 {
+    let mut ts = Timespec { tv_sec: 0, tv_nsec: 0 };
+    if unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts) } != 0 {
+        return 0;
+    }
+    ts.tv_sec as u64 * 1000 + ts.tv_nsec as u64 / 1_000_000
+}
+
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
@@ -296,6 +382,9 @@ pub struct DirEntry {
 /// Lists a directory's entries, in the VFS's own order. None if it
 /// can't be opened.
 pub fn read_dir(path: &CStr) -> Option<Vec<DirEntry>> {
+    if !is_dir(path.to_str().unwrap_or("")) {
+        return None;
+    }
     let dir = unsafe { opendir(path.as_ptr()) };
     if dir.is_null() {
         return None;

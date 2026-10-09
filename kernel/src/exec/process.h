@@ -91,6 +91,11 @@ void process_close_stdio_pipes(struct process *p);
 
 struct process *process_by_pid(int pid);
 
+/* Whether any live process's working directory is `dir` or somewhere
+ * inside it -- i.e. whether removing `dir` would leave a process holding
+ * a freed vnode as its cwd. */
+int process_cwd_within(const struct vnode *dir);
+
 /* Finds a process that's `parent_pid`'s child, matching `pid` exactly if
  * `pid >= 0`, or any child at all if `pid < 0` -- preferring an already-
  * PROC_ZOMBIE one over a still-running one when `pid < 0` and more than

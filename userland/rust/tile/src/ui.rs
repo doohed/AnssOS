@@ -11,9 +11,9 @@
 //!  ^B 1-4  focus   ^B o  next   ^B ^B  send ^B   ^B q  quit           <- keycaps reversed
 //! ```
 //!
-//! (`#` is a solid cell.) Same visual language as play and scarf: the
-//! console's only style is reverse video, and a reversed space is a
-//! solid cell. Unfocused pane titles are a `-` rule rather than plain
+//! (`#` is a solid cell.) Same visual language as play and scarf: tile's
+//! own chrome is monochrome, reverse video only, and a reversed space is
+//! a solid cell. What runs *in* a pane keeps its colors (vt.rs). Unfocused pane titles are a `-` rule rather than plain
 //! text, so the bottom row of panes stays visibly separated from the top.
 //! Three panes put the third across the full bottom row.
 
@@ -24,10 +24,11 @@ use anssos_tui::solid;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::pane::Pane;
+use crate::vt::Attr;
 
 /// Where pane `i` goes: its title row plus the content area below it.
 pub struct Slot {
@@ -114,16 +115,33 @@ fn pane_content(buf: &mut Buffer, area: Rect, pane: &Pane, focused: bool) {
     for y in 0..vt.rows.min(area.height) {
         for x in 0..vt.cols.min(area.width) {
             let cell = vt.cell(x, y);
-            let mut rev = cell.rev;
+            let mut attr = cell.attr;
             if focused && pane.alive() && vt.cursor_visible && x == vt.cx && y == vt.cy {
-                rev = !rev;
+                attr.rev = !attr.rev;
             }
             if let Some(out) = buf.cell_mut((area.x + x, area.y + y)) {
-                out.set_char(cell.ch as char);
-                out.set_style(if rev { solid() } else { Style::new() });
+                out.set_char(cell.ch);
+                out.set_style(style_of(attr));
             }
         }
     }
+}
+
+/// A VT cell's attributes as a ratatui style (anssos-tui's backend turns
+/// it back into the same SGR codes).
+fn style_of(a: Attr) -> Style {
+    let color = |i: Option<u8>| i.map_or(Color::Reset, Color::Indexed);
+    let mut style = Style::new().fg(color(a.fg)).bg(color(a.bg));
+    if a.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if a.dim {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if a.rev {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
 }
 
 /// Key hints, htop-style: keycaps reversed, actions plain.

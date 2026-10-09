@@ -111,12 +111,33 @@ Two independent output paths, both fed by `kprintf`:
   terminal *is* the console.
 - **Framebuffer.** `console/fbconsole.c` draws an 8x8 bitmap font over
   the virtio-gpu framebuffer, and understands a subset of ANSI/CSI
-  escape sequences (cursor addressing, erase, reverse video) -- enough
-  for a full-screen program like [scarf](scarf.md) to render. A
+  escape sequences: cursor addressing, erase, and SGR for the 16 ANSI
+  colors (foreground and background, from its own palette), bold (drawn
+  as the bright color), dim (blended toward the background) and reverse
+  video -- enough for full-screen programs like [scarf](scarf.md) and
+  the colored prompt of [sh](sh.md). Anything outside that subset is
+  swallowed, not printed.
+
+  Text is UTF-8. The font is `font8x8_basic.h` for ASCII plus
+  `font8x8_ext.h` for about 30 extra glyphs: box drawing (`─ │ ┌ ╭ ├ ┼`
+  ...), the arrow and round segment ends a powerline-style prompt uses
+  (U+E0B0-U+E0B7), and `❯ ❮ ✔ ✘ · … ● █ ▌ ▐`. Any other character draws
+  as `?`. The extra glyphs are drawn as `#`/`.` pictures in
+  `scripts/gen-font-ext.py`, which generates the header; to add one,
+  draw it there and rerun the script. tile's per-pane terminal and the
+  ratatui backend (`anssos_tui::console_has()`) pass the same set
+  through. A
   redraw costs one `virtio_gpu_flush()`, which currently transfers the
   *entire* framebuffer; see [scarf.md](scarf.md#performance).
 
 Input is equally dual: `shell.c`'s `read_line()` polls
 `virtio_input_poll_char()` (the virtio keyboard, which needs a
 graphical window with focus) and `serial_poll_char()` on every
-iteration, whichever has a byte ready.
+iteration, whichever has a byte ready. Keys with no single byte --
+arrows, Home/End, Delete, Page Up/Down -- come out of the virtio
+keyboard as the escape sequences a VT100-style terminal sends (`ESC [ A`
+for Up, `ESC [ 3 ~` for Delete, ...), so a program sees the same bytes
+from either input.
+
+The kernel boots into the userland shell, `/bin/sh` ([sh.md](sh.md)),
+and falls back to the kernel-resident `shell.c` if it ever exits.

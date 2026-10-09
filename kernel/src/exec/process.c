@@ -33,6 +33,20 @@ struct process *process_by_pid(int pid) {
     return NULL;
 }
 
+int process_cwd_within(const struct vnode *dir) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (processes[i].state == PROC_UNUSED) {
+            continue;
+        }
+        for (const struct vnode *v = processes[i].task.cwd; v != NULL; v = v->parent) {
+            if (v == dir) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 struct process *process_current(void) {
     return current_process;
 }

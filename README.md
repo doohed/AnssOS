@@ -13,7 +13,8 @@ targets UEFI + long mode only.
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | how the system is put together: boot, memory, drivers, processes, syscalls, filesystem, console |
 | [docs/building.md](docs/building.md) | building and running -- natively, in the container, and under UTM |
-| [docs/shell.md](docs/shell.md) | shell builtins, running programs from `/bin`, the serial console, scripted testing |
+| [docs/sh.md](docs/sh.md) | the shell the system boots into: prompt, suggestions, completion, commands |
+| [docs/shell.md](docs/shell.md) | the kernel-resident fallback shell, the serial console, scripted testing |
 | [docs/syscalls.md](docs/syscalls.md) | the syscall table, the initial stack layout, terminal handling |
 | [docs/scarf.md](docs/scarf.md) | the text editor: keys, design notes, performance |
 | [docs/roadmap.md](docs/roadmap.md) | milestone history -- what arrived when, and what went wrong building it |
@@ -34,13 +35,15 @@ container with a clang cross-toolchain and drops you into it with the
 repo mounted at `/work`; the two scripts above are still the entry
 points. See [docs/building.md](docs/building.md).
 
-The shell doubles as a real serial console, so **typing into the
-terminal you launched from talks to the system**. Try:
+It boots into [sh](docs/sh.md), a shell with a colored two-line prompt,
+highlighting as you type, history suggestions and Tab completion. The
+console doubles as a real serial terminal, so **typing into the terminal
+you launched from talks to the system** too. Try:
 
 ```
-AnssOS:/> help
-AnssOS:/> ls /bin
-AnssOS:/> scarf .
+> help
+> ls /bin
+> scarf .
 ```
 
 

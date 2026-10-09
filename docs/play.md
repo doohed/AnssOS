@@ -5,8 +5,8 @@ written in Rust (`userland/rust/play/`). It plays a playlist of files over the
 `virtio-sound` driver (`kernel/src/drivers/virtio/virtio_snd.c`, M17).
 
 ```
-AnssOS:/> play testtone.wav                # the built-in test fixture
-AnssOS:/> play song1.mp3 song2.wav song3.mp3
+> play testtone.wav                # the built-in test fixture
+> play song1.mp3 song2.wav song3.mp3
 ```
 
 ## Screen
@@ -32,8 +32,10 @@ AnssOS:/> play song1.mp3 song2.wav song3.mp3
 ```
 
 (`#` stands for a solid cell here.) The console's font (`font8x8_basic`)
-is ASCII-only, and its only "style" is reverse video (`ESC[7m`; no SGR
-colors, see `docs/architecture.md`'s console section). But a
+is ASCII-only, and this screen is drawn in monochrome: reverse video
+(`ESC[7m`) only, no colors. (The console has since gained the 16 ANSI
+colors, see `docs/architecture.md`'s console section; `play` predates
+them.) But a
 reverse-video *space* is a solid cell, so the header and footer bars, the
 spectrum's bars and the gauges' fill are all reversed spaces. A `#` in an
 8×8 font reads as a cross-hatched grid instead.
@@ -162,7 +164,7 @@ mapped to an ASCII stand-in, which is only a fallback.
 The screen (`play/src/ui.rs`) draws through ratatui's `Frame`/`Buffer`,
 `Line` and `Span`. The spectrum and the meters are small custom
 widgets, because the stock `BarChart`/`Gauge` assume block glyphs or
-colors this console doesn't have. Geometry is plain `Rect` arithmetic
+a color palette `play` doesn't use. Geometry is plain `Rect` arithmetic
 rather than ratatui's constraint-solver `Layout`: the crate is
 soft-float, and the layout depends only on the terminal size.
 

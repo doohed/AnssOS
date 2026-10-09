@@ -48,16 +48,21 @@ void serial_write(const char *s) {
 }
 
 static void (*console_sink)(char c);
+static int console_muted;
 
 void kprintf_set_sink(void (*sink)(char c)) {
     console_sink = sink;
+}
+
+void kprintf_mute_console(int mute) {
+    console_muted += mute ? 1 : -1;
 }
 
 /* Every kprintf output byte goes through here so it reaches both the */
 /* serial port and, once registered, the framebuffer console. */
 static void kout_putc(char c) {
     serial_putc(c);
-    if (console_sink != NULL) {
+    if (console_sink != NULL && console_muted == 0) {
         console_sink(c);
     }
 }

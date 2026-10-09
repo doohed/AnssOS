@@ -28,6 +28,10 @@ termios` has Linux's layout, and so on.
 | 59 | `execve` | `execve(path, argv)` | replaces the image in place; same pid, open files, cwd, termios |
 | 60 | `exit` | `exit(status)` | |
 | 61 | `wait4` | `waitpid(pid, status)` | simplified: no options, no `WNOHANG` |
+| 82 | `rename` | `rename(src, dest)` | move/rename; a `dest` that's an existing directory means *into* it |
+| 87 | `unlink` | `unlink(path)` | removes a file, **or a directory and everything in it**; refuses if any process's cwd is inside |
+| 162 | `sync` | `sync()` | writes the whole filesystem to disk; -1 with no disk |
+| 228 | `clock_gettime` | `clock_gettime(clock, timespec*)` | `CLOCK_MONOTONIC` (1) only: time since boot, 10 ms resolution |
 | 22 | `pipe` | `pipe(pipefd[2])` | `pipefd[0]`=read end, `pipefd[1]`=write end; both never block (see below) |
 | 24 | `sched_yield` | `sched_yield()` | gives up the rest of the time slice; what a loop polling an empty pipe calls instead of spinning |
 | 79 | `getcwd` | `getcwd(buf, size)` | absolute path of the task's cwd |
@@ -52,6 +56,7 @@ not-a-real-syscall:
 | 901 | `audio_write` | `audio_write(buf, len)` | S16LE PCM; blocks until the device has consumed it |
 | 902 | `audio_close` | `audio_close()` | |
 | 903 | `poll_key` | `poll_key()` | non-blocking; -1 if no key is ready. With a piped stdin (a tile pane) it reads that pipe instead of the keyboard, and returns -2 once the pipe is closed |
+| 905 | `copy` | `copy_path(src, dest)` (libc name) | copies a file or a whole directory tree; same `dest` rule as `rename` |
 | 904 | `use_as_stdio` | `use_as_stdio(stdin_fd, stdout_fd)` | points this task's fd 0/1 at the pipes behind two existing fds |
 
 `poll_key` is what makes an interactive audio player possible without
@@ -158,11 +163,21 @@ process. This is how [tile](tile.md) tells a pane's programs the pane's
 size: the pane's child sets it once before exec'ing `sh`, and
 everything `sh` runs inherits it.
 
-**Processes with piped stdio don't print to the console.** The kernel's
-"process N exited with code X" line goes to the serial log only for a
-process whose stdout is a pipe, because someone else (a tile pane) is
-drawing its output and a line printed straight onto the framebuffer
-would land on top of it.
+**File operations are the kernel shell's.** `unlink`, `rename` and
+`copy` call the same `fs/vfs.c` functions as the kernel shell's
+`delete`, `move` and `copy`, with the same refusals. Those functions
+report errors with `kprintf()`; on a program's behalf that output is
+kept off the screen (serial only, via `kprintf_mute_console()`), and the
+syscall just returns -1 for the program to report. Nothing a program
+writes is on disk until something calls `sync`.
+
+**Exit messages.** The kernel's "process N exited with code X" line
+appears on the console only for a program the kernel shell launched
+itself, because that's the only way the kernel shell reports exit
+statuses. Every other process's parent gets the status from `wait()` and
+shows it its own way (sh's prompt), and may not even be drawing on the
+console directly (a tile pane), so those exits go to the serial log
+only.
 
 ## Not implemented
 
@@ -170,7 +185,7 @@ No `mmap`, no signals, no `poll`/`select`, no general `dup`/`dup2` (M19
 added `pipe()` and the narrower `use_as_stdio()` instead -- see above),
 no pty (a per-process window size stands in for the one thing tile
 needed from one), no `O_NONBLOCK` on anything but pipes (which are unconditionally
-non-blocking), no `stat`/`fstat`, no `unlink`/`rename`, no `envp`, no TLS
+non-blocking), no `stat`/`fstat`, no `envp`, no TLS
 or `arch_prctl`. A real terminal multiplexer and a userland shell turned
 out *not* to need most of that list after all -- see
 [tile.md](tile.md) -- but a musl port still does.

@@ -58,6 +58,31 @@ static int shift_held;
 static int ctrl_held;
 static int initialized; /* Guards virtio_input_poll_char() if init never ran or failed. */
 
+/* Keys that have no single byte -- arrows, Home/End, Delete, PgUp/PgDn
+ * -- come out as the escape sequences a VT100-style terminal sends for
+ * them (ESC [ A for Up, ESC [ 3 ~ for Delete, ...), exactly what a
+ * program reading a serial terminal already sees. This driver hands out
+ * one byte per poll, so a special key returns ESC and parks the rest of
+ * its sequence here for the next polls. */
+static const char *pending_seq;
+
+struct special_key {
+    uint16_t code;
+    const char *seq; /* what follows the ESC */
+};
+
+static const struct special_key SPECIAL_KEYS[] = {
+    {102, "[H"},  /* Home */
+    {103, "[A"},  /* Up */
+    {104, "[5~"}, /* Page Up */
+    {105, "[D"},  /* Left */
+    {106, "[C"},  /* Right */
+    {107, "[F"},  /* End */
+    {108, "[B"},  /* Down */
+    {109, "[6~"}, /* Page Down */
+    {111, "[3~"}, /* Delete */
+};
+
 /* US QWERTY: Linux key codes (see the kernel's input-event-codes.h) ->
  * ASCII. 0 means "no mapping, drop the key".
  *
@@ -202,6 +227,13 @@ int virtio_input_poll_char(void) {
     if (!initialized) {
         return -1;
     }
+    if (pending_seq != NULL) {
+        char c = *pending_seq++;
+        if (*pending_seq == '\0') {
+            pending_seq = NULL;
+        }
+        return (unsigned char)c;
+    }
 
     for (;;) {
         uint16_t desc_id;
@@ -236,6 +268,18 @@ int virtio_input_poll_char(void) {
 
         if (ev.value != 1 && ev.value != 2) {
             continue; /* Only care about press (1) and repeat (2), not release (0). */
+        }
+
+        int special = 0;
+        for (size_t i = 0; i < sizeof(SPECIAL_KEYS) / sizeof(SPECIAL_KEYS[0]); i++) {
+            if (SPECIAL_KEYS[i].code == ev.code) {
+                pending_seq = SPECIAL_KEYS[i].seq;
+                special = 1;
+                break;
+            }
+        }
+        if (special) {
+            return 0x1b;
         }
 
         if (ev.code >= sizeof(KEYMAP_LOWER) / sizeof(KEYMAP_LOWER[0])) {

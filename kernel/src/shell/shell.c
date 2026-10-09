@@ -96,6 +96,7 @@ static char lower_char(char c) {
  * serial terminal. */
 static void read_line(char *buf, size_t max_len) {
     size_t len = 0;
+    int in_escape = 0; /* inside an ESC [ ... sequence (an arrow key etc.) */
     for (;;) {
         int c = virtio_input_poll_char();
         if (c < 0) {
@@ -103,6 +104,20 @@ static void read_line(char *buf, size_t max_len) {
         }
         if (c < 0) {
             asm volatile("pause");
+            continue;
+        }
+
+        /* This line reader has no cursor movement or history -- arrow
+         * keys and friends (ESC [ ... final byte) are swallowed rather
+         * than echoed as literal "[A". */
+        if (c == 0x1b) {
+            in_escape = 1;
+            continue;
+        }
+        if (in_escape) {
+            if (c != '[' && !(c >= '0' && c <= '9') && c != ';') {
+                in_escape = 0;
+            }
             continue;
         }
 

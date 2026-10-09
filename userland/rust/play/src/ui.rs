@@ -1,7 +1,8 @@
 //! The player screen.
 //!
-//! The console's font (font8x8_basic) is ASCII-only and its only style
-//! is reverse video -- but a reverse-video *space* is a solid cell, and
+//! The console's font (font8x8_basic) is ASCII-only, and this screen is
+//! drawn in monochrome -- reverse video only, no colors -- but a
+//! reverse-video *space* is a solid cell, and
 //! that is what makes this look like more than a terminal dump: the
 //! header/footer bars, the spectrum's bars and the gauges' fill are all
 //! reversed spaces, so they render as solid blocks rather than the

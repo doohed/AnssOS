@@ -24,4 +24,11 @@ __attribute__((format(printf, 1, 2))) void kprintf(const char *fmt, ...);
 /* framebuffer console, once it's up) -- pass NULL to unregister. */
 void kprintf_set_sink(void (*sink)(char c));
 
+/* While muted (calls nest), kprintf() still reaches serial but not the
+ * console sink. For kernel helpers that report their own errors with
+ * kprintf() -- fs/vfs.c's -- when they run on a userland program's
+ * behalf (exec/syscall.c): the program reports errors itself, and the
+ * screen is the program's, possibly a tile pane drawn by someone else. */
+void kprintf_mute_console(int mute);
+
 #endif

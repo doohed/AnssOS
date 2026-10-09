@@ -13,8 +13,8 @@
 //!  :w                                                                 chip cut out of it
 //! ```
 //!
-//! (`#` is a solid cell.) Same visual language as `play`: the console
-//! only does reverse video, and a reversed space is a solid cell, so
+//! (`#` is a solid cell.) Same visual language as `play`: monochrome,
+//! reverse video only, and a reversed space is a solid cell, so
 //! the focused pane's title, the divider, the status bar and the cursor
 //! are all solid. The divider is a solid column rather than `|`, which
 //! font8x8_basic draws as a broken bar. Which pane has focus is shown

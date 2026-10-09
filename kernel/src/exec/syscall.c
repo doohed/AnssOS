@@ -3,9 +3,12 @@
 #include "../arch/x86_64/usermode.h"
 #include "../console/fbconsole.h"
 #include "../drivers/serial.h"
+#include "../drivers/pit.h"
 #include "../drivers/tty.h"
+#include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/virtio/virtio_input.h"
 #include "../drivers/virtio/virtio_snd.h"
+#include "../fs/blkfs.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
 #include "../mm/heap.h"
@@ -30,6 +33,10 @@
 #define SYS_brk 12
 #define SYS_getpid 39
 #define SYS_chdir 80
+#define SYS_rename 82
+#define SYS_unlink 87
+#define SYS_sync 162
+#define SYS_clock_gettime 228
 #define SYS_mkdir 83
 #define SYS_fork 57
 #define SYS_execve 59
@@ -55,6 +62,7 @@
  * ever "make my stdio these two pipes," never arbitrary fd->fd
  * redirection), so it's AnssOS-native too -- see M19's plan doc. */
 #define SYS_use_as_stdio 904
+#define SYS_copy 905
 
 /* ioctl() requests this project actually understands -- Linux's real
  * TCGETS/TCSETS values, so a program built the standard way (get
@@ -207,6 +215,85 @@ static int64_t sys_mkdir_impl(const char *path) {
         return -1;
     }
     return vfs_mkdir(task->cwd, path) == 0 ? 0 : -1;
+}
+
+/* unlink/rename/copy are fs/vfs.c's own remove/move/copy -- the same
+ * operations, and the same refusals, as the kernel shell's
+ * delete/move/copy -- with that file's kprintf() error reports kept off
+ * the screen (kprintf_mute_console(), drivers/serial.h): the calling
+ * program reports failures itself. Unlike Linux, unlink() removes
+ * directories too (recursively), and rename()/copy() follow the shell's
+ * "a destination that's a directory means *into* it" convention. */
+static int64_t sys_unlink_impl(const char *path) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || !user_ptr_ok(path, 1)) {
+        return -1;
+    }
+    /* vfs_remove() checks only the cwd it's given; any other process
+     * (another tile pane's shell) sitting inside the target would be
+     * left with a freed vnode as its cwd. */
+    struct vnode *node = vfs_resolve(task->cwd, path);
+    if (node == NULL || process_cwd_within(node)) {
+        return -1;
+    }
+    kprintf_mute_console(1);
+    int r = vfs_remove(task->cwd, path, task->cwd);
+    kprintf_mute_console(0);
+    return r == 0 ? 0 : -1;
+}
+
+static int64_t sys_rename_impl(const char *src, const char *dest) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || !user_ptr_ok(src, 1) || !user_ptr_ok(dest, 1)) {
+        return -1;
+    }
+    kprintf_mute_console(1);
+    int r = vfs_move(task->cwd, src, dest);
+    kprintf_mute_console(0);
+    return r == 0 ? 0 : -1;
+}
+
+static int64_t sys_copy_impl(const char *src, const char *dest) {
+    struct usertask *task = usermode_current_task();
+    if (task == NULL || !user_ptr_ok(src, 1) || !user_ptr_ok(dest, 1)) {
+        return -1;
+    }
+    kprintf_mute_console(1);
+    int r = vfs_copy(task->cwd, src, dest);
+    kprintf_mute_console(0);
+    return r == 0 ? 0 : -1;
+}
+
+/* Writes the whole filesystem to disk now (fs/blkfs.c) -- nothing a
+ * program writes is persistent until something does this. -1 when
+ * there's no disk. */
+static int64_t sys_sync_impl(void) {
+    if (!virtio_blk_is_ready()) {
+        return -1;
+    }
+    kprintf_mute_console(1);
+    int r = blkfs_save();
+    kprintf_mute_console(0);
+    return r == 0 ? 0 : -1;
+}
+
+/* Linux's struct timespec. Only CLOCK_MONOTONIC (1) exists: there's no
+ * real-time clock driver, only the PIT's time since boot
+ * (drivers/pit.h), at 10 ms resolution. */
+struct k_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+};
+#define CLOCK_MONOTONIC 1
+
+static int64_t sys_clock_gettime_impl(int clock, struct k_timespec *ts) {
+    if (clock != CLOCK_MONOTONIC || !user_ptr_ok(ts, sizeof(*ts))) {
+        return -1;
+    }
+    uint64_t ms = pit_uptime_ms();
+    ts->tv_sec = (int64_t)(ms / 1000);
+    ts->tv_nsec = (int64_t)(ms % 1000) * 1000000;
+    return 0;
 }
 
 static int64_t sys_lseek_impl(int fd, int64_t offset, int whence) {
@@ -766,11 +853,13 @@ static int64_t sys_wait_impl(int pid, int *status_ptr) {
     return target_pid;
 }
 
-/* "process N exited with code X". On the physical console normally --
- * but a process whose stdout is a pipe is drawn by someone else (a tile
- * pane), and kprintf() writing straight onto the framebuffer would land
- * on top of whatever that program is drawing. Its exit goes to the
- * serial log only; whoever waits for it gets the status from wait(). */
+/* "process N exited with code X" -- on the console only for a program
+ * the kernel shell launched itself (its parent is the kernel), since
+ * that's the only way the kernel shell reports exit statuses. Anything
+ * else has a parent that gets the status from wait() and shows it its
+ * own way (sh's prompt), and may be drawn by someone else entirely (a
+ * tile pane), where kprintf() writing straight onto the framebuffer
+ * would land on top of it. Those exits go to the serial log only. */
 static void serial_write_int(int v) {
     char digits[12];
     int n = 0;
@@ -789,7 +878,7 @@ static void serial_write_int(int v) {
 
 static void log_exit(struct process *me, int code) {
     int pid = me != NULL ? me->pid : -1;
-    if (me == NULL || me->task.stdout_pipe == NULL) {
+    if (me == NULL || (me->parent_pid == KERNEL_PARENT_PID && me->task.stdout_pipe == NULL)) {
         kprintf("\nprocess %d exited with code %d\n", pid, code);
         return;
     }
@@ -797,7 +886,7 @@ static void log_exit(struct process *me, int code) {
     serial_write_int(pid);
     serial_write(" exited with code ");
     serial_write_int(code);
-    serial_write(" (piped stdout)\n");
+    serial_write("\n");
 }
 
 void syscall_dispatch(struct interrupt_frame *frame) {
@@ -828,6 +917,21 @@ void syscall_dispatch(struct interrupt_frame *frame) {
             break;
         case SYS_mkdir:
             result = sys_mkdir_impl((const char *)frame->rdi);
+            break;
+        case SYS_unlink:
+            result = sys_unlink_impl((const char *)frame->rdi);
+            break;
+        case SYS_rename:
+            result = sys_rename_impl((const char *)frame->rdi, (const char *)frame->rsi);
+            break;
+        case SYS_copy:
+            result = sys_copy_impl((const char *)frame->rdi, (const char *)frame->rsi);
+            break;
+        case SYS_sync:
+            result = sys_sync_impl();
+            break;
+        case SYS_clock_gettime:
+            result = sys_clock_gettime_impl((int)frame->rdi, (struct k_timespec *)frame->rsi);
             break;
         case SYS_getdents:
             result = sys_getdents_impl((int)frame->rdi, (struct dirent *)frame->rsi);

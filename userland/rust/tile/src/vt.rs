@@ -6,13 +6,15 @@
 //! program here is written against that console, so a pane has to
 //! behave the same:
 //!
-//! - printable bytes draw at the cursor and advance it, wrapping
+//! - printable characters (ASCII, or UTF-8 for the console's extra
+//!   glyphs) draw at the cursor and advance it, wrapping
 //!   *immediately* after the last column (no deferred wrap) and
 //!   scrolling once past the last row;
 //! - `\n` goes to column 0 of the next row, `\r` to column 0, `\b` steps
 //!   back and blanks that cell;
 //! - CSI: CUP (`H`/`f`), CUU/CUD/CUF/CUB (`A`-`D`), ED (`J` 0/1/2), EL
-//!   (`K` 0/1/2), SGR (`m`: 7 reverse on, 0/27 or none off), and the
+//!   (`K` 0/1/2), SGR (`m`: the 16 ANSI colors, bold, dim, reverse,
+//!   and their resets), and the
 //!   private `?25l`/`?25h` cursor visibility (which the real console
 //!   ignores, but a pane needs it to know whether to draw a cursor);
 //! - anything else is swallowed silently, like the console does.
@@ -24,14 +26,26 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// How a cell is drawn: SGR state at the time it was written.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Cell {
-    pub ch: u8,
-    /// Reverse video.
+pub struct Attr {
+    /// Palette index 0-15; None is the default color.
+    pub fg: Option<u8>,
+    pub bg: Option<u8>,
+    pub bold: bool,
+    pub dim: bool,
     pub rev: bool,
 }
 
-const BLANK: Cell = Cell { ch: b' ', rev: false };
+const PLAIN: Attr = Attr { fg: None, bg: None, bold: false, dim: false, rev: false };
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    pub ch: char,
+    pub attr: Attr,
+}
+
+const BLANK: Cell = Cell { ch: ' ', attr: PLAIN };
 const MAX_PARAMS: usize = 8;
 
 enum State {
@@ -46,10 +60,12 @@ pub struct Vt {
     cells: Vec<Cell>,
     pub cx: u16,
     pub cy: u16,
-    rev: bool,
+    attr: Attr,
     /// Whether the program wants a cursor shown (`?25h`/`?25l`).
     pub cursor_visible: bool,
     state: State,
+    /// A UTF-8 character in progress: bits so far, continuation bytes left.
+    utf8: (u32, u8),
     params: [u16; MAX_PARAMS],
     nparams: usize,
     private: bool,
@@ -64,9 +80,10 @@ impl Vt {
             cells: vec![BLANK; cols as usize * rows as usize],
             cx: 0,
             cy: 0,
-            rev: false,
+            attr: PLAIN,
             cursor_visible: true,
             state: State::Normal,
+            utf8: (0, 0),
             params: [0; MAX_PARAMS],
             nparams: 0,
             private: false,
@@ -111,8 +128,8 @@ impl Vt {
         }
     }
 
-    fn put(&mut self, ch: u8) {
-        self.set(self.cx, self.cy, Cell { ch, rev: self.rev });
+    fn put(&mut self, ch: char) {
+        self.set(self.cx, self.cy, Cell { ch, attr: self.attr });
         self.cx += 1;
         if self.cx >= self.cols {
             self.cx = 0;
@@ -127,6 +144,31 @@ impl Vt {
     }
 
     fn byte(&mut self, b: u8) {
+        // UTF-8, decoded the way the console does: a malformed sequence
+        // draws one '?'.
+        if self.utf8.1 > 0 {
+            if b & 0xC0 == 0x80 {
+                self.utf8 = ((self.utf8.0 << 6) | (b & 0x3F) as u32, self.utf8.1 - 1);
+                if self.utf8.1 == 0 {
+                    self.put(char::from_u32(self.utf8.0).unwrap_or('?'));
+                }
+                return;
+            }
+            self.utf8.1 = 0;
+            self.put('?');
+        }
+        if b >= 0x80 {
+            self.utf8 = match b {
+                0xC0..=0xDF => ((b & 0x1F) as u32, 1),
+                0xE0..=0xEF => ((b & 0x0F) as u32, 2),
+                0xF0..=0xF7 => ((b & 0x07) as u32, 3),
+                _ => {
+                    self.put('?');
+                    (0, 0)
+                }
+            };
+            return;
+        }
         match self.state {
             State::Esc => {
                 if b == b'[' {
@@ -175,10 +217,10 @@ impl Vt {
                 0x08 => {
                     if self.cx > 0 {
                         self.cx -= 1;
-                        self.set(self.cx, self.cy, Cell { ch: b' ', rev: self.rev });
+                        self.set(self.cx, self.cy, Cell { ch: ' ', attr: self.attr });
                     }
                 }
-                b' '..=b'~' => self.put(b),
+                b' '..=b'~' => self.put(b as char),
                 _ => {} // other control bytes, and non-ASCII: the console has no glyph
             },
         }
@@ -218,13 +260,24 @@ impl Vt {
             },
             b'm' => {
                 if self.nparams == 0 {
-                    self.rev = false;
+                    self.attr = PLAIN;
                 }
-                for &p in &self.params[..self.nparams] {
-                    match p {
-                        0 | 27 => self.rev = false,
-                        7 => self.rev = true,
-                        _ => {}
+                for i in 0..self.nparams {
+                    let a = &mut self.attr;
+                    match self.params[i] {
+                        0 => *a = PLAIN,
+                        1 => a.bold = true,
+                        2 => a.dim = true,
+                        7 => a.rev = true,
+                        22 => (a.bold, a.dim) = (false, false),
+                        27 => a.rev = false,
+                        p @ 30..=37 => a.fg = Some((p - 30) as u8),
+                        39 => a.fg = None,
+                        p @ 40..=47 => a.bg = Some((p - 40) as u8),
+                        49 => a.bg = None,
+                        p @ 90..=97 => a.fg = Some((p - 90 + 8) as u8),
+                        p @ 100..=107 => a.bg = Some((p - 100 + 8) as u8),
+                        _ => {} // underline, 256-color, ...: not on this console
                     }
                 }
             }

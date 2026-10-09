@@ -1,5 +1,6 @@
 #include "fbconsole.h"
 #include "font8x8_basic.h"
+#include "font8x8_ext.h"
 #include "../lib/string.h"
 
 #include <stdint.h>
@@ -12,7 +13,27 @@
 static struct virtio_gpu_fb *fb;
 static uint32_t cols, rows;
 static uint32_t cursor_col, cursor_row;
-static int reverse_video; /* SGR 7 -- see handle_csi()'s 'm' case. */
+/* Current SGR attributes -- see handle_csi()'s 'm' case. fg/bg are
+ * palette indexes, -1 for the defaults (FG_COLOR/BG_COLOR). */
+static int reverse_video;
+static int fg_index = -1, bg_index = -1;
+static int bold, dim;
+
+/* The 16 ANSI colors (SGR 30-37/90-97 foreground, 40-47/100-107
+ * background), as 0x00RRGGBB -- which is what a BGRX8888 pixel is in a
+ * little-endian uint32_t. Picked to read well on black at 8x8 pixels:
+ * the dark eight are mid-bright rather than the dim classic VGA set. */
+static const uint32_t PALETTE[16] = {
+    0x00000000u, 0x00D0504Fu, 0x0060B050u, 0x00D8A840u, /* black red green yellow */
+    0x004A80D8u, 0x00B060C8u, 0x0040A8B8u, 0x00C0C0C0u, /* blue magenta cyan white */
+    0x005C5C5Cu, 0x00FF7070u, 0x0090E080u, 0x00FFD870u, /* bright: black(grey) red green yellow */
+    0x0070B0FFu, 0x00E090FFu, 0x0070E0F0u, 0x00FFFFFFu, /* bright: blue magenta cyan white */
+};
+
+/* Halfway between two colors, per channel -- SGR 2 (dim) text. */
+static uint32_t blend(uint32_t a, uint32_t b) {
+    return ((a >> 1) & 0x007F7F7Fu) + ((b >> 1) & 0x007F7F7Fu);
+}
 static int batching, batch_dirty;
 
 /* Escape-sequence parser state. Everything this console understands is a
@@ -29,16 +50,43 @@ static void put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     fb->pixels[y * fb->width + x] = color;
 }
 
-static void draw_glyph(uint32_t col, uint32_t row, char c) {
-    uint8_t code = (uint8_t)c;
-    if (code > 127) {
-        code = '?';
+/* UTF-8 decoding state: a multi-byte character arrives one byte per
+ * fbconsole_putc() call. */
+static uint32_t utf8_cp;
+static int utf8_need; /* continuation bytes still expected */
+
+/* The bitmap for a code point: ASCII from font8x8_basic, the extras in
+ * font8x8_ext.h (box drawing, prompt-theme arrows, a few symbols), and
+ * '?' for anything else. */
+static const uint8_t *glyph_for(uint32_t cp) {
+    if (cp < 128) {
+        return font8x8_basic[cp];
     }
-    const uint8_t *glyph = font8x8_basic[code];
+    for (size_t i = 0; i < sizeof(font8x8_ext) / sizeof(font8x8_ext[0]); i++) {
+        if (font8x8_ext[i].cp == cp) {
+            return font8x8_ext[i].rows;
+        }
+    }
+    return font8x8_basic['?'];
+}
+
+static void draw_glyph(uint32_t col, uint32_t row, uint32_t cp) {
+    const uint8_t *glyph = glyph_for(cp);
     uint32_t base_x = col * GLYPH_W;
     uint32_t base_y = row * GLYPH_H;
-    uint32_t fg = reverse_video ? BG_COLOR : FG_COLOR;
-    uint32_t bg = reverse_video ? FG_COLOR : BG_COLOR;
+    /* Bold is drawn as the bright variant of a dark color: an 8x8
+     * bitmap font has no bold weight. */
+    int fg_i = (bold && fg_index >= 0 && fg_index < 8) ? fg_index + 8 : fg_index;
+    uint32_t fg = fg_i >= 0 ? PALETTE[fg_i] : FG_COLOR;
+    uint32_t bg = bg_index >= 0 ? PALETTE[bg_index] : BG_COLOR;
+    if (dim) {
+        fg = blend(fg, bg);
+    }
+    if (reverse_video) {
+        uint32_t t = fg;
+        fg = bg;
+        bg = t;
+    }
 
     for (uint32_t gy = 0; gy < GLYPH_H; gy++) {
         uint8_t bits = glyph[gy];
@@ -87,6 +135,10 @@ void fbconsole_clear(void) {
     cursor_col = 0;
     cursor_row = 0;
     reverse_video = 0;
+    fg_index = -1;
+    bg_index = -1;
+    bold = 0;
+    dim = 0;
     pstate = P_NORMAL;
 }
 
@@ -185,25 +237,63 @@ static void handle_csi(char final) {
             }
             break;
         }
-        case 'm': { /* SGR -- only reverse video, which is how scarf (userland/rust/scarf/)
-                     * draws its cursor (portable: real terminals do this too,
-                     * so the serial path renders identically). No colour
-                     * support; those parameters are ignored, not an error. */
+        case 'm': { /* SGR -- the 16 ANSI colors, bold, dim and reverse. */
             if (nparams == 0) {
                 reverse_video = 0;
+                fg_index = bg_index = -1;
+                bold = dim = 0;
             }
             for (int i = 0; i < nparams; i++) {
-                if (params[i] == 0 || params[i] == 27) {
+                uint32_t p = params[i];
+                if (p == 0) {
                     reverse_video = 0;
-                } else if (params[i] == 7) {
+                    fg_index = bg_index = -1;
+                    bold = dim = 0;
+                } else if (p == 1) {
+                    bold = 1;
+                } else if (p == 2) {
+                    dim = 1;
+                } else if (p == 7) {
                     reverse_video = 1;
+                } else if (p == 22) {
+                    bold = dim = 0;
+                } else if (p == 27) {
+                    reverse_video = 0;
+                } else if (p >= 30 && p <= 37) {
+                    fg_index = (int)(p - 30);
+                } else if (p == 39) {
+                    fg_index = -1;
+                } else if (p >= 40 && p <= 47) {
+                    bg_index = (int)(p - 40);
+                } else if (p == 49) {
+                    bg_index = -1;
+                } else if (p >= 90 && p <= 97) {
+                    fg_index = (int)(p - 90 + 8);
+                } else if (p >= 100 && p <= 107) {
+                    bg_index = (int)(p - 100 + 8);
                 }
+                /* Anything else (underline, 256-color, ...) is ignored. */
             }
             break;
         }
         default:
             break; /* Includes ESC[?25l/h (cursor visibility) -- nothing to do
                     * here, since this console draws no cursor of its own. */
+    }
+}
+
+/* Draws one character at the cursor and advances: wrapping immediately
+ * after the last column (no deferred wrap), scrolling past the last row. */
+static void put_glyph(uint32_t cp) {
+    draw_glyph(cursor_col, cursor_row, cp);
+    cursor_col++;
+    if (cursor_col >= cols) {
+        cursor_col = 0;
+        cursor_row++;
+    }
+    if (cursor_row >= rows) {
+        scroll();
+        cursor_row = rows - 1;
     }
 }
 
@@ -247,6 +337,36 @@ void fbconsole_putc(char c) {
         }
         return;
     }
+    /* UTF-8: a lead byte starts a character, continuation bytes finish
+     * it; a malformed sequence draws one '?' and is dropped. */
+    uint8_t b = (uint8_t)c;
+    if (utf8_need > 0) {
+        if ((b & 0xC0) == 0x80) {
+            utf8_cp = (utf8_cp << 6) | (b & 0x3F);
+            if (--utf8_need == 0) {
+                put_glyph(utf8_cp);
+            }
+            return;
+        }
+        utf8_need = 0;
+        put_glyph('?'); /* truncated sequence; then handle `b` itself */
+    }
+    if (b >= 0x80) {
+        if ((b & 0xE0) == 0xC0) {
+            utf8_cp = b & 0x1F;
+            utf8_need = 1;
+        } else if ((b & 0xF0) == 0xE0) {
+            utf8_cp = b & 0x0F;
+            utf8_need = 2;
+        } else if ((b & 0xF8) == 0xF0) {
+            utf8_cp = b & 0x07;
+            utf8_need = 3;
+        } else {
+            put_glyph('?'); /* a stray continuation byte */
+        }
+        return;
+    }
+
     if (c == 0x1b) {
         pstate = P_ESC;
         return;
@@ -270,24 +390,18 @@ void fbconsole_putc(char c) {
     if (c == '\n') {
         cursor_col = 0;
         cursor_row++;
-    } else {
-        draw_glyph(cursor_col, cursor_row, c);
-        cursor_col++;
-        if (cursor_col >= cols) {
-            cursor_col = 0;
-            cursor_row++;
+        if (cursor_row >= rows) {
+            scroll();
+            cursor_row = rows - 1;
         }
+        return;
     }
-
-    if (cursor_row >= rows) {
-        scroll();
-        cursor_row = rows - 1;
-    }
+    put_glyph(b);
 }
 
 void fbconsole_draw_text_at(uint32_t col, uint32_t row, const char *s) {
     while (*s) {
-        draw_glyph(col, row, *s);
+        draw_glyph(col, row, (uint8_t)*s);
         col++;
         s++;
     }

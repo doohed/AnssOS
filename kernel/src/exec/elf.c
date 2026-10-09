@@ -49,6 +49,7 @@ struct __attribute__((packed)) elf64_phdr {
  * reasonably-linked non-PIE binary's own segments (those typically start
  * around 0x400000). */
 #define USER_STACK_TOP 0x0000700000000000ull
+#define MAX_LOAD_SEGMENTS 16 /* PT_LOAD segments tracked for page sharing */
 /* 64 KiB: minimp3's mp3dec_decode_frame() alone (userland/rust/play/) puts a
  * ~16 KiB scratch struct on the stack -- the old 16 KiB overflowed. */
 #define USER_STACK_PAGES 16
@@ -91,6 +92,21 @@ int elf_load(const uint8_t *image, size_t image_size, int argc, const char *cons
     const struct elf64_phdr *phdrs = (const struct elf64_phdr *)(image + eh->e_phoff);
     uint64_t heap_base = 0; /* Highest PT_LOAD segment's mapped end -- see below. */
 
+    /* Segments loaded so far: their first page, page count, and where
+     * their (contiguous) pages are in kernel memory. Two segments may
+     * share a page -- segments only have to be page-aligned *relative to
+     * their file offset*, so one can end and the next begin mid-page
+     * (rustc's static-PIE .got right after .rodata does exactly that).
+     * Such a page is already mapped by the earlier segment; the later
+     * one writes its bytes into it rather than mapping a fresh zeroed
+     * page over it, which would wipe the earlier segment's tail. */
+    struct {
+        uint64_t start;
+        uint64_t pages;
+        uint8_t *kbase;
+    } loaded[MAX_LOAD_SEGMENTS];
+    int nloaded = 0;
+
     for (uint16_t i = 0; i < eh->e_phnum; i++) {
         const struct elf64_phdr *ph = &phdrs[i];
         if (ph->p_type != PT_LOAD) {
@@ -117,8 +133,34 @@ int elf_load(const uint8_t *image, size_t image_size, int argc, const char *cons
         memcpy(seg_kernel_virt + seg_offset, image + ph->p_offset, ph->p_filesz);
 
         for (uint64_t p = 0; p < page_count; p++) {
-            vmm_map(&as, seg_start + p * PMM_PAGE_SIZE, base_phys + p * PMM_PAGE_SIZE,
-                    PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+            uint64_t vpage = seg_start + p * PMM_PAGE_SIZE;
+            uint8_t *shared = NULL;
+            /* The first segment covering the page is the one that
+             * actually mapped it (later ones only wrote into it). */
+            for (int k = 0; k < nloaded && shared == NULL; k++) {
+                if (vpage >= loaded[k].start &&
+                    vpage < loaded[k].start + loaded[k].pages * PMM_PAGE_SIZE) {
+                    shared = loaded[k].kbase + (vpage - loaded[k].start);
+                }
+            }
+            if (shared == NULL) {
+                vmm_map(&as, vpage, base_phys + p * PMM_PAGE_SIZE,
+                        PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER);
+                continue;
+            }
+            /* Copy only this segment's own bytes into the shared page
+             * (file bytes and its zero-filled .bss tail alike), then give
+             * back the duplicate page it was going to use. */
+            uint64_t from = ph->p_vaddr > vpage ? ph->p_vaddr : vpage;
+            uint64_t to = seg_end < vpage + PMM_PAGE_SIZE ? seg_end : vpage + PMM_PAGE_SIZE;
+            memcpy(shared + (from - vpage), seg_kernel_virt + (from - seg_start), to - from);
+            pmm_free_page(base_phys + p * PMM_PAGE_SIZE);
+        }
+        if (nloaded < MAX_LOAD_SEGMENTS) {
+            loaded[nloaded].start = seg_start;
+            loaded[nloaded].pages = page_count;
+            loaded[nloaded].kbase = seg_kernel_virt;
+            nloaded++;
         }
 
         uint64_t seg_mapped_end = seg_start + page_count * PMM_PAGE_SIZE;

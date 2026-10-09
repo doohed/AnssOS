@@ -1,7 +1,10 @@
 # The shell
 
-`shell/shell.c` is an interactive command shell reading lines from
-either input path (see [architecture.md](architecture.md#console)).
+`shell/shell.c` is the kernel-resident command shell, reading lines from
+either input path (see [architecture.md](architecture.md#console)). The
+system boots into the userland shell, [sh](sh.md), instead; this one
+takes over if `sh` exits (`sh` starts it again), and is the only place
+the kernel diagnostics (`meminfo`, `lspci`, `crash`, `reboot`, ...) live.
 Command *names* are matched case-insensitively; arguments keep whatever
 case you typed.
 

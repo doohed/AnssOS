@@ -24,7 +24,55 @@ mod ui;
 use alloc::string::String;
 use core::ffi::{CStr, c_char, c_int};
 
-use editor::{Editor, Focus};
+use anssos::KeyPoll;
+use editor::{Editor, Focus, Special};
+
+/// The rest of an escape sequence arrives right behind its ESC (the
+/// keyboard driver queues it; tile writes it in one go), so it's polled
+/// for briefly: nothing following means a plain Esc keypress.
+fn next_byte() -> Option<u8> {
+    for _ in 0..4 {
+        match anssos::poll_key() {
+            KeyPoll::Key(b) => return Some(b),
+            KeyPoll::Closed => return None,
+            KeyPoll::Empty => anssos::sched_yield(),
+        }
+    }
+    None
+}
+
+/// After an ESC: the special key it starts, or None for a plain Esc.
+/// Sequences this editor doesn't use (Page Up, ...) are swallowed as
+/// Some(None) rather than replayed as keystrokes.
+fn read_escape() -> Option<Option<Special>> {
+    match next_byte() {
+        Some(b'[') | Some(b'O') => {}
+        _ => return None,
+    }
+    let mut num = 0u16;
+    loop {
+        let k = match next_byte() {
+            Some(d @ b'0'..=b'9') => {
+                num = num.saturating_mul(10).saturating_add((d - b'0') as u16);
+                continue;
+            }
+            Some(b'A') => Special::Up,
+            Some(b'B') => Special::Down,
+            Some(b'C') => Special::Right,
+            Some(b'D') => Special::Left,
+            Some(b'H') => Special::Home,
+            Some(b'F') => Special::End,
+            Some(b'~') => match num {
+                1 | 7 => Special::Home,
+                4 | 8 => Special::End,
+                3 => Special::Delete,
+                _ => return Some(None),
+            },
+            _ => return Some(None),
+        };
+        return Some(Some(k));
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
@@ -70,6 +118,11 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
             ui::render(frame, &ed, &layout);
         });
         match anssos::read_key() {
+            Some(0x1b) => match read_escape() {
+                None => ed.key(0x1b),
+                Some(Some(k)) => ed.special(k),
+                Some(None) => {}
+            },
             Some(key) => ed.key(key),
             // stdin closed for good (a tile pane shutting down): there's
             // no way to ask about unsaved changes, so quit, like vim does

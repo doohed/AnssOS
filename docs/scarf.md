@@ -7,9 +7,9 @@ screen rather than scroll log lines past; it started as C
 (`userland/scarf.c`) and was ported to Rust with identical behavior.
 
 ```
-AnssOS:/> scarf                  # sidebar on the current directory
-AnssOS:/> scarf notes.txt        # open a file
-AnssOS:/docs> scarf .            # sidebar on /docs
+> scarf                  # sidebar on the current directory
+> scarf notes.txt        # open a file
+> scarf .                # sidebar on the shell's directory
 ```
 
 A directory argument opens the sidebar there; a file argument opens
@@ -33,8 +33,8 @@ shell's cwd.
 ```
 
 (`#` stands for a solid cell.) It uses the same visual language as
-[play](play.md#screen). The console's only style is reverse video, and a
-reverse-video space is a solid cell, so these are all solid:
+[play](play.md#screen): monochrome, reverse video only, where a
+reverse-video space is a solid cell. So these are all solid:
 
 - the focused pane's title;
 - the divider (a solid column, because `font8x8_basic` draws `|` as a
@@ -185,6 +185,10 @@ landed alongside it:
 ## Not supported
 
 Visual mode, registers/yank/put, undo, and search. Deliberately, to keep
-the thing reviewable. Arrow keys aren't handled either: the virtio
-keymap (`kernel/src/drivers/virtio/virtio_input.c`) only covers key
-codes up to 61, so the arrows (103-108) never produce a byte.
+the thing reviewable.
+
+Arrow keys, Home/End and Delete arrive as escape sequences (`ESC [ A`,
+...). In normal mode and the sidebar they act as the matching vim key
+(`k`/`j`/`h`/`l`, `0`/`$`, `x`); in insert mode they move the cursor
+without leaving insert mode. A lone Esc is still Esc: scarf checks
+whether more bytes follow right behind it.

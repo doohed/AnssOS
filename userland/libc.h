@@ -13,6 +13,26 @@ int close(int fd);
 long lseek(int fd, long offset, int whence);
 int chdir(const char *path);
 int mkdir(const char *path);
+
+/* File management -- the kernel shell's delete/move/copy/sync as
+ * syscalls (see kernel/src/exec/syscall.c). Unlike Linux, unlink()
+ * removes directories too (recursively); rename() and copy_path() treat
+ * a destination that's an existing directory as "into it". sync()
+ * writes the whole filesystem to disk -- nothing is persistent until
+ * something calls it. */
+int unlink(const char *path);
+int rename(const char *src, const char *dest);
+int copy_path(const char *src, const char *dest);
+int sync(void);
+
+/* Only CLOCK_MONOTONIC (time since boot, 10 ms resolution): there's no
+ * real-time clock. */
+struct timespec {
+    long tv_sec;
+    long tv_nsec;
+};
+#define CLOCK_MONOTONIC 1
+int clock_gettime(int clock, struct timespec *ts);
 int fork(void);
 int execve(const char *path, char *const argv[]);
 int waitpid(int pid, int *status);

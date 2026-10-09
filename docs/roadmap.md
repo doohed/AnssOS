@@ -619,6 +619,41 @@ virtio-gpu queue.
       `scarf` running side by side: the captured audio still matches
       the reference with no dropouts. See [tile.md](tile.md).
 
+- [x] **M26 -- a new `sh`, and the system boots into it.**
+      `userland/rust/sh/` replaces the C `sh`: a two-line prompt (colored
+      blocks for the system, the working directory, the last command's
+      duration and status), the command line highlighted as it's typed,
+      grey suggestions from history, Tab completion of commands and paths
+      with a selectable list, and history search on Up/Down. It has
+      every file command (`ls`, `cat`, `mkdir`, `touch`, `rm`, `cp`,
+      `mv`, `sync`, plus the kernel shell's spellings), so the kernel
+      boots straight into it, falling back to the kernel shell if it
+      exits. Kernel: `unlink`/`rename`/`copy`/`sync` syscalls over the
+      kernel shell's own VFS operations (their `kprintf` errors kept
+      off-screen), `clock_gettime` (monotonic), the 16 ANSI colors plus
+      bold and dim in `fbconsole.c`, escape sequences for arrows/Home/
+      End/Delete from the virtio keyboard, and the "process exited"
+      line only for programs the kernel shell launched. The ratatui
+      backend and tile's VT carry colors through; scarf learned the
+      arrow keys. See [sh.md](sh.md).
+
+- [x] **M27 -- prompt styles and `configure`.** `sh`'s prompt is drawn
+      from settings (`/.sh_prompt`) chosen in a step-by-step wizard with
+      live previews: Lean, Classic or Rainbow; one line or two; a frame;
+      a dotted or solid connection; sharp, round or flat segment ends;
+      glyphs or plain text; system name; spacing. For the arrows, rounds
+      and icons, the console now decodes UTF-8 and has ~30 extra 8x8
+      glyphs (`kernel/src/console/font8x8_ext.h`, generated from
+      pictures by `scripts/gen-font-ext.py`), passed through by tile's
+      VT and the ratatui backend. **The bug this found:** the ELF loader
+      mapped a fresh zeroed page for every segment, so when two
+      segments shared a page (rustc's `.got` right after `.rodata`) the
+      later one wiped the end of the earlier one -- here, the integer
+      formatting table, so every number the prompt printed came out as
+      NUL bytes. `elf_load()` now writes a later segment's bytes into a
+      page an earlier one already mapped. Also fixed:
+      `build-userland.sh` failing when run from inside `scripts/`.
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
