@@ -12,28 +12,41 @@ AnssOS:/> play song1.mp3 song2.wav song3.mp3
 ## Screen
 
 ```
-+ AnssOS play ---------------------------------------------------- [1/3] +
-|Track:  song1.mp3                                                       |
-|Format: 48000 Hz, stereo, MP3 320 kbps                                  |
-|+ spectrum 60 Hz - 7 kHz ----------------------------------------------+|
-||                                                                      ||
-||    ##  ##                                                            ||
-|| ## ##  ## ## ==                                                      ||
-|| ## ## ### ## ## ## ##          __                                    ||
-|+----------------------------------------------------------------------+|
-|01:02 / 02:00 ######################-----------------------------------  |
-|Volume 110%   ######################################-------------------  |
-|PLAYING                                                                 |
-+------------- space pause | n next | q quit | +/- volume ---------------+
+ AnssOS play                                              track 2 of 3    <- solid header bar
+
+       song1.mp3
+
+       MP3 320 kbps   48 kHz   stereo
+
+       ----     ----                                                      <- peak markers
+       ####     ####  ----
+       #### #### #### #### ----      ----                                 <- solid bars
+       #### #### #### #### #### #### ####  ####
+       60 Hz         210           735          2k          7 kHz
+
+       01:02  ##############-------------------------------------  03:45
+
+       > PLAYING                              VOL ##########---------- 100%
+
+ SPACE  pause   N  next   Q  quit   +/-  volume                           <- keycaps reversed
 ```
 
-It fills the whole terminal; the spectrum box takes whatever height is
-left over. The title and ` PAUSED ` are reverse video (`ESC[7m`), the
-only "color" this console's ANSI parser supports (no SGR color codes; see
-`docs/architecture.md`'s console section). Everything else is plain
-ASCII, because `font8x8_basic` has no box-drawing or block glyphs. Every
-widget is given an ASCII symbol set for its borders, bars and gauges
-(see "Design notes" below).
+(`#` stands for a solid cell here.) The console's font (`font8x8_basic`)
+is ASCII-only, and its only "style" is reverse video (`ESC[7m`; no SGR
+colors, see `docs/architecture.md`'s console section). But a
+reverse-video *space* is a solid cell, so the header and footer bars, the
+spectrum's bars and the gauges' fill are all reversed spaces. A `#` in an
+8×8 font reads as a cross-hatched grid instead.
+
+The content is a column capped at 100 columns, centred horizontally and
+vertically between the header and footer. The spectrum gets at most one
+row per level (20), so the screen doesn't stretch edge to edge on a large
+framebuffer. The spectrum's 20 bars always span exactly the column's
+width, lined up with the progress and status rows below; columns that
+don't divide evenly are spread across the gaps. Text lines are separated
+by a blank row, because the 8×8 font has no leading and adjacent lines
+touch. Everything adapts down to small terminals: the spectrum shrinks
+first (minimum 3 rows), and labels that wouldn't fit are dropped.
 
 ## Keys
 
@@ -142,9 +155,14 @@ plus one `build_program` line in `build-userland.sh`.
 one buffer and writes it with a single `write()` per frame. It emits only
 the escapes the console understands: CUP, ED/EL, and SGR 7/0. CUP is
 skipped for consecutive cells on the same row. Any non-ASCII symbol is
-mapped to an ASCII stand-in, which is only a fallback: `src/ui.rs` gives
-every widget ASCII sets (`+-|` borders, `#`/`=`/`_` bar tops, `#`/`-`
-gauges).
+mapped to an ASCII stand-in, which is only a fallback.
+
+The screen (`play/src/ui.rs`) draws through ratatui's `Frame`/`Buffer`,
+`Line` and `Span`. The spectrum and the meters are small custom
+widgets, because the stock `BarChart`/`Gauge` assume block glyphs or
+colors this console doesn't have. Geometry is plain `Rect` arithmetic
+rather than ratatui's constraint-solver `Layout`: the crate is
+soft-float, and the layout depends only on the terminal size.
 
 **The bottom row stays empty.** The console wraps the cursor as soon as
 a glyph lands in the last column; it has no deferred wrap. Writing the
@@ -152,9 +170,8 @@ bottom-right cell would therefore scroll the whole screen up a line, so
 the backend reports one row fewer than the console has.
 
 **Soft-float.** `x86_64-unknown-none` is a soft-float target, so the
-little float math ratatui does runs in software. That covers its
-constraint-solver layout and the gauges' ratios. The solver runs once
-per terminal size: `ui::Ui` caches the computed rectangles. The hot paths
+little float math ratatui does runs in software. `play` avoids ratatui's
+float-based layout solver entirely (see above). The hot paths
 (PCM copy, volume and the Goertzel filters) stay integer. minimp3 is C
 compiled with SSE and does use the FPU, which is safe because the kernel
 saves and restores each process's FPU/SSE state.
@@ -186,14 +203,15 @@ not exponentially unstable, because Goertzel's poles sit exactly on the
 unit circle.
 
 Turning raw power into a bar height needs a log scale. The power's bit
-length is an exact integer stand-in for log2: `level = bitlen(power) -
-25`, clamped to 0-24. The floor of 25 was calibrated by simulating this
-exact recurrence against real audio: quiet bands land under bit length
-~25, and a present tone or music lands at about 27-47. The 20 levels are
-handed to ratatui's `BarChart` with `max(24)`. It scales them to the
-spectrum box's height and spreads them across its width, with bar width
-and gap computed from that width. Bars jump straight up but fall at most
-3 levels per chunk, a cheap "gravity" that keeps them from flickering.
+length is an exact integer stand-in for log2, and each bit is ~3 dB:
+`level = bitlen(power) - 25`, clamped to 0-20, which spans 60 dB. The
+floor of 25 was calibrated by simulating this exact recurrence against
+real audio: quiet bands land under bit length ~25, and a present tone or
+music at about 27-47. Most music sits in the lower half of that range,
+which is why the top is cut at 45. Bars jump straight up but fall at
+most 3 levels per chunk, a cheap "gravity" that keeps them from
+flickering. A peak marker per band holds the recent maximum for 15 chunks
+(~0.3 s), then falls one level per chunk.
 
 ## Adding your own audio
 

@@ -1,43 +1,64 @@
-//! The player screen, drawn with ratatui widgets. Every widget gets an
-//! ASCII symbol set (borders, bars, gauges): the console's font has no
-//! box-drawing or block glyphs, and its only "style" is reverse video.
+//! The player screen.
+//!
+//! The console's font (font8x8_basic) is ASCII-only and its only style
+//! is reverse video -- but a reverse-video *space* is a solid cell, and
+//! that is what makes this look like more than a terminal dump: the
+//! header/footer bars, the spectrum's bars and the gauges' fill are all
+//! reversed spaces, so they render as solid blocks rather than the
+//! cross-hatched grid a `#` turns into in an 8x8 font.
+//!
+//! ```text
+//!  AnssOS play                                              track 2 of 2   <- header bar
+//!
+//!        song.mp3
+//!
+//!        MP3 320 kbps   48 kHz   stereo
+//!
+//!        ##  ##  --                                                   <- solid bars,
+//!        ##  ##  ##  --  ##                                              peak markers
+//!        ##  ##  ##  ##  ##  ##      ##
+//!        60 Hz         210           735          2k          7 kHz
+//!
+//!        01:02  ################-------------------------------  03:45
+//!
+//!        > PLAYING                          VOL ##########---------- 100%
+//!
+//!  SPACE pause   N next   Q quit   +/- volume                         <- footer, keys reversed
+//! ```
+//!
+//! The content is a centered column capped at MAX_WIDTH, vertically
+//! centered between the header and footer, with the spectrum's height
+//! capped too (one row per level at most) -- on a big framebuffer
+//! console, stretching everything edge to edge looks sparse, not grand.
+//! Geometry is plain Rect arithmetic, no constraint solver: this crate is
+//! soft-float, and it all depends only on the terminal size anyway.
 
 use alloc::format;
-use alloc::vec::Vec;
+use alloc::string::String;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Style, Stylize};
-use ratatui::symbols::{bar, border};
-use ratatui::text::Line;
-use ratatui::widgets::{Bar, BarChart, BarGroup, Block, LineGauge, Paragraph};
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Widget;
 
 use crate::source::TrackInfo;
 use crate::spectrum::{MAX_LEVEL, N_BANDS};
 
-const ASCII_BORDER: border::Set = border::Set {
-    top_left: "+",
-    top_right: "+",
-    bottom_left: "+",
-    bottom_right: "+",
-    vertical_left: "|",
-    vertical_right: "|",
-    horizontal_top: "-",
-    horizontal_bottom: "-",
-};
+const MAX_WIDTH: u16 = 100;
+/// Spectrum rows at most: one per level, so bars move in whole cells.
+const MAX_SPECTRUM_ROWS: u16 = MAX_LEVEL as u16;
+const MIN_SPECTRUM_ROWS: u16 = 3;
+/// Rows the content column needs besides the spectrum: track, gap,
+/// format, gap, axis, gap, progress, gap, status. The 8x8 font has no
+/// leading, so stacked text lines touch -- a blank row between any two
+/// text lines is what keeps them readable.
+const FIXED_ROWS: u16 = 9;
 
-/// Bar tops in three heights: `_` low in the cell, `=` mid, `#` full.
-const ASCII_BARS: bar::Set = bar::Set {
-    full: "#",
-    seven_eighths: "#",
-    three_quarters: "#",
-    five_eighths: "=",
-    half: "=",
-    three_eighths: "=",
-    one_quarter: "_",
-    one_eighth: "_",
-    empty: " ",
-};
+/// Axis labels: (band index, text). Bands are log-spaced 60 Hz-7 kHz,
+/// see spectrum.rs.
+const AXIS: [(usize, &str); 5] = [(0, "60 Hz"), (5, "210"), (10, "735"), (14, "2k"), (19, "7 kHz")];
 
 pub struct View<'a> {
     pub name: &'a str,
@@ -48,94 +69,211 @@ pub struct View<'a> {
     pub volume: i32,
     pub paused: bool,
     pub levels: &'a [u64; N_BANDS],
+    pub peaks: &'a [u64; N_BANDS],
 }
 
-/// Layout solving runs ratatui's constraint solver in (soft-)float math,
-/// so it's done once per terminal size rather than every frame.
-#[derive(Default)]
-pub struct Ui {
-    cached: Option<(Rect, [Rect; 5])>,
+fn solid() -> Style {
+    Style::new().reversed()
 }
 
-impl Ui {
-    fn layout(&mut self, area: Rect) -> [Rect; 5] {
-        if let Some((a, rects)) = self.cached {
-            if a == area {
-                return rects;
+pub fn render(frame: &mut Frame, v: &View) {
+    let area = frame.area();
+    let buf = frame.buffer_mut();
+    if area.width < 20 || area.height < 4 {
+        buf.set_stringn(0, 0, "play: terminal too small", area.width as usize, Style::new());
+        return;
+    }
+
+    header(buf, area, v);
+    footer(buf, area);
+
+    // The content column: centered, capped width, vertically centered
+    // in the rows between the header and footer.
+    let width = area.width.saturating_sub(4).min(MAX_WIDTH);
+    let x = area.x + (area.width - width) / 2;
+    let body = area.height - 2;
+    let spectrum_rows = body.saturating_sub(FIXED_ROWS + 2).clamp(MIN_SPECTRUM_ROWS, MAX_SPECTRUM_ROWS);
+    let content = (FIXED_ROWS + spectrum_rows).min(body);
+    let mut y = area.y + 1 + (body - content) / 2;
+    let bottom = area.y + area.height - 1; // the footer row
+    let mut row = |rows: u16| {
+        let r = Rect { x, y, width, height: rows.min(bottom.saturating_sub(y)) };
+        y = (y + rows).min(bottom);
+        r
+    };
+
+    track_info(buf, row(3), v);
+    row(1);
+    Spectrum { levels: v.levels, peaks: v.peaks }.render(row(spectrum_rows), buf);
+    axis(buf, row(1));
+    row(1);
+    progress(buf, row(1), v.elapsed_secs, v.info.total_secs);
+    row(1);
+    status(buf, row(1), v.paused, v.volume);
+}
+
+/// Solid bar across the top: program name left, track counter right.
+fn header(buf: &mut Buffer, area: Rect, v: &View) {
+    buf.set_string(area.x, area.y, " ".repeat(area.width as usize), solid());
+    buf.set_string(area.x + 1, area.y, "AnssOS play", solid());
+    let counter = format!("track {} of {} ", v.track_idx, v.track_count);
+    let cx = area.right().saturating_sub(counter.len() as u16);
+    buf.set_string(cx, area.y, counter, solid());
+}
+
+/// htop-style key hints along the bottom: keycaps reversed, actions plain.
+fn footer(buf: &mut Buffer, area: Rect) {
+    let keys = [(" SPACE ", " pause  "), (" N ", " next  "), (" Q ", " quit  "), (" +/- ", " volume")];
+    let mut spans = alloc::vec![Span::raw(" ")];
+    for (key, action) in keys {
+        spans.push(Span::styled(key, solid()));
+        spans.push(Span::raw(action));
+    }
+    buf.set_line(area.x, area.bottom() - 1, &Line::from(spans), area.width);
+}
+
+fn track_info(buf: &mut Buffer, area: Rect, v: &View) {
+    let channels = if v.info.channels == 1 { "mono" } else { "stereo" };
+    let rate = if v.info.rate % 1000 == 0 {
+        format!("{} kHz", v.info.rate / 1000)
+    } else {
+        format!("{}.{} kHz", v.info.rate / 1000, v.info.rate % 1000 / 100)
+    };
+    let codec = if v.info.mp3_kbps > 0 { format!("MP3 {} kbps", v.info.mp3_kbps) } else { "WAV 16-bit PCM".into() };
+    buf.set_stringn(area.x, area.y, v.name, area.width as usize, Style::new());
+    if area.height > 2 {
+        let details = format!("{codec}   {rate}   {channels}");
+        buf.set_stringn(area.x, area.y + 2, details, area.width as usize, Style::new());
+    }
+}
+
+/// Bar geometry shared by the spectrum and its axis: N_BANDS bars of
+/// equal width spanning exactly `width` columns, so they line up with
+/// the progress and status rows below. Columns that don't divide evenly
+/// are spread one apiece across the gaps.
+struct Bars {
+    bar: u16,
+    gap: u16,
+    spare: u16,
+}
+
+impl Bars {
+    fn new(width: u16) -> Bars {
+        let n = N_BANDS as u16;
+        let gap = if width >= 3 * n { 1 } else { 0 };
+        let bar = ((width + gap) / n).saturating_sub(gap).max(1);
+        let used = n * bar + (n - 1) * gap;
+        Bars { bar, gap, spare: width.saturating_sub(used) }
+    }
+
+    /// Column offset of band `i`.
+    fn x(&self, i: usize) -> u16 {
+        let i = i as u16;
+        let n = N_BANDS as u16;
+        i * (self.bar + self.gap) + i * self.spare / (n - 1)
+    }
+}
+
+/// Solid bars (reversed spaces) with a `-` peak marker floating above
+/// each one while its peak holds.
+struct Spectrum<'a> {
+    levels: &'a [u64; N_BANDS],
+    peaks: &'a [u64; N_BANDS],
+}
+
+impl Widget for Spectrum<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let bars = Bars::new(area.width);
+        let bar = bars.bar;
+        let rows = area.height as u64;
+        let to_rows = |level: u64| (level * rows + MAX_LEVEL / 2) / MAX_LEVEL;
+        for band in 0..N_BANDS {
+            let x = area.x + bars.x(band);
+            if x + bar > area.right() {
+                break;
+            }
+            let height = to_rows(self.levels[band]) as u16;
+            let peak = to_rows(self.peaks[band]) as u16;
+            for i in 0..height {
+                let y = area.bottom() - 1 - i;
+                buf.set_string(x, y, " ".repeat(bar as usize), solid());
+            }
+            if peak > height {
+                buf.set_string(x, area.bottom() - peak, "-".repeat(bar as usize), Style::new());
             }
         }
-        let inner = Block::bordered().inner(area);
-        let rects = Layout::vertical([
-            Constraint::Length(2), // track + format
-            Constraint::Min(4),    // spectrum
-            Constraint::Length(1), // progress
-            Constraint::Length(1), // volume
-            Constraint::Length(1), // state
-        ])
-        .areas(inner);
-        self.cached = Some((area, rects));
-        rects
-    }
-
-    pub fn render(&mut self, frame: &mut Frame, v: &View) {
-        let area = frame.area();
-        let [info_area, spectrum_area, progress_area, volume_area, state_area] = self.layout(area);
-
-        let outer = Block::bordered()
-            .border_set(ASCII_BORDER)
-            .title(Line::from(" AnssOS play ").reversed())
-            .title_top(Line::from(format!(" [{}/{}] ", v.track_idx, v.track_count)).right_aligned())
-            .title_bottom(Line::from(" space pause | n next | q quit | +/- volume ").centered());
-        frame.render_widget(outer, area);
-
-        let channels = if v.info.channels == 1 { "mono" } else { "stereo" };
-        let codec = if v.info.mp3_kbps > 0 { format!("MP3 {} kbps", v.info.mp3_kbps) } else { "16-bit PCM".into() };
-        let info = Paragraph::new(alloc::vec![
-            Line::from(format!("Track:  {}", v.name)),
-            Line::from(format!("Format: {} Hz, {channels}, {codec}", v.info.rate)),
-        ]);
-        frame.render_widget(info, info_area);
-
-        frame.render_widget(spectrum(spectrum_area, v.levels), spectrum_area);
-
-        let total = v.info.total_secs;
-        let progress = LineGauge::default()
-            .ratio(if total > 0 { (v.elapsed_secs.min(total) as f64) / total as f64 } else { 0.0 })
-            .label(format!("{} / {}", clock(v.elapsed_secs), clock(total)))
-            .filled_symbol("#")
-            .unfilled_symbol("-");
-        frame.render_widget(progress, progress_area);
-
-        let volume = LineGauge::default()
-            .ratio(v.volume.clamp(0, 200) as f64 / 200.0)
-            .label(format!("Volume {:>3}%", v.volume))
-            .filled_symbol("#")
-            .unfilled_symbol("-");
-        frame.render_widget(volume, volume_area);
-
-        let state = if v.paused { Line::from(" PAUSED ").reversed() } else { Line::from("PLAYING") };
-        frame.render_widget(Paragraph::new(state), state_area);
     }
 }
 
-/// Bars stretched to fill the spectrum box's width -- there are always
-/// N_BANDS of them, however wide the terminal is.
-fn spectrum(area: Rect, levels: &[u64; N_BANDS]) -> BarChart<'static> {
-    let block = Block::bordered().border_set(ASCII_BORDER).title(" spectrum 60 Hz - 7 kHz ");
-    let width = block.inner(area).width;
-    let gap = if width >= 2 * N_BANDS as u16 { 1 } else { 0 };
-    let bar_width = ((width + gap) / N_BANDS as u16).saturating_sub(gap).max(1);
-    let bars: Vec<Bar> = levels.iter().map(|&l| Bar::default().value(l).text_value("")).collect();
-    BarChart::default()
-        .block(block)
-        .data(BarGroup::default().bars(&bars))
-        .max(MAX_LEVEL)
-        .bar_set(ASCII_BARS)
-        .bar_width(bar_width)
-        .bar_gap(gap)
-        .bar_style(Style::default())
+/// Frequency labels under the bands they name, skipping any that would
+/// collide with the previous one on a narrow terminal.
+fn axis(buf: &mut Buffer, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let bars = Bars::new(area.width);
+    let mut free_from = area.x;
+    for (i, (band, label)) in AXIS.iter().enumerate() {
+        let len = label.len() as u16;
+        let (bar_x, bar) = (area.x + bars.x(*band), bars.bar);
+        // First label left-aligned to its bar, last right-aligned,
+        // the rest centered.
+        let x = match i {
+            0 => bar_x,
+            _ if i == AXIS.len() - 1 => (bar_x + bar).saturating_sub(len),
+            _ => (bar_x + bar / 2).saturating_sub(len / 2),
+        };
+        if x >= free_from && x + len <= area.right() {
+            buf.set_string(x, area.y, label, Style::new());
+            free_from = x + len + 1;
+        }
+    }
 }
 
-fn clock(secs: u32) -> alloc::string::String {
+/// A meter: `filled` of `width` cells solid, the rest a `-` track.
+fn meter(buf: &mut Buffer, x: u16, y: u16, width: u16, filled: u16) {
+    let filled = filled.min(width);
+    buf.set_string(x, y, " ".repeat(filled as usize), solid());
+    buf.set_string(x + filled, y, "-".repeat((width - filled) as usize), Style::new());
+}
+
+fn clock(secs: u32) -> String {
     format!("{:02}:{:02}", (secs / 60).min(99), secs % 60)
+}
+
+/// `01:02  ######--------  03:45`
+fn progress(buf: &mut Buffer, area: Rect, elapsed: u32, total: u32) {
+    if area.height == 0 || area.width < 16 {
+        return;
+    }
+    let (left, right) = (clock(elapsed), clock(total));
+    let track = area.width - 14;
+    let filled = if total > 0 { (elapsed.min(total) as u64 * track as u64 / total as u64) as u16 } else { 0 };
+    buf.set_string(area.x, area.y, left, Style::new());
+    meter(buf, area.x + 7, area.y, track, filled);
+    buf.set_string(area.right() - 5, area.y, right, Style::new());
+}
+
+/// `> PLAYING` (or a reversed `|| PAUSED`) left, volume meter right.
+fn status(buf: &mut Buffer, area: Rect, paused: bool, volume: i32) {
+    if area.height == 0 {
+        return;
+    }
+    if paused {
+        buf.set_string(area.x, area.y, " || PAUSED ", solid());
+    } else {
+        buf.set_string(area.x, area.y, "> PLAYING", Style::new());
+    }
+
+    const VOL_CELLS: u16 = 20;
+    let label = format!("{volume:>3}%");
+    let width = 4 + VOL_CELLS + 1 + label.len() as u16;
+    if area.width < width + 12 {
+        return;
+    }
+    let x = area.right() - width;
+    buf.set_string(x, area.y, "VOL ", Style::new());
+    // 0-200%, so 100% is half full.
+    meter(buf, x + 4, area.y, VOL_CELLS, (volume.clamp(0, 200) as u16 * VOL_CELLS) / 200);
+    buf.set_string(area.right() - label.len() as u16, area.y, label, Style::new());
 }

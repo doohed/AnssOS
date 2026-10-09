@@ -9,11 +9,12 @@
 pub const N_BANDS: usize = 20;
 
 /// Bar level range: a band's power bit-length of LEVEL_FLOOR or less is
-/// silence, LEVEL_FLOOR + MAX_LEVEL or more is a full bar. Calibrated
-/// against real audio for the original C player: silence and quiet
-/// passages land under bit-length ~25, a present tone or music bar
-/// roughly 27-47.
-pub const MAX_LEVEL: u64 = 24;
+/// silence, LEVEL_FLOOR + MAX_LEVEL or more is a full bar. Each bit is
+/// ~3 dB, so 20 levels span 60 dB. Calibrated against real audio for the
+/// original C player: silence and quiet passages land under bit-length
+/// ~25, a present tone or music roughly 27-47; most music sits in the
+/// lower half of that, so the top is cut at 45 to let bars use the box.
+pub const MAX_LEVEL: u64 = 20;
 const LEVEL_FLOOR: i32 = 25;
 /// Levels a bar falls per chunk (~21 ms of 48 kHz stereo).
 const DECAY: u64 = 3;
@@ -30,15 +31,22 @@ const COEFF_48000: [i64; N_BANDS] = [
     63302, 61862, 59510, 55692, 49560, 39896,
 ];
 
+/// How many chunks a peak marker holds before it starts falling.
+const PEAK_HOLD: u32 = 15;
+
 pub struct Spectrum {
     /// Current bar levels, 0..=MAX_LEVEL.
     pub levels: [u64; N_BANDS],
+    /// Recent maximum per band -- drawn as a marker floating above the
+    /// bar, which holds briefly and then falls one level per chunk.
+    pub peaks: [u64; N_BANDS],
+    peak_age: [u32; N_BANDS],
     mono: [i32; 2048],
 }
 
 impl Spectrum {
     pub fn new() -> Self {
-        Spectrum { levels: [0; N_BANDS], mono: [0; 2048] }
+        Spectrum { levels: [0; N_BANDS], peaks: [0; N_BANDS], peak_age: [0; N_BANDS], mono: [0; 2048] }
     }
 
     /// Updates `levels` from one chunk of S16LE PCM. A bar jumps straight
@@ -55,7 +63,7 @@ impl Spectrum {
         let samples = &self.mono[..frames];
 
         let coeffs = if rate == 48000 { &COEFF_48000 } else { &COEFF_44100 };
-        for (level, &coeff) in self.levels.iter_mut().zip(coeffs) {
+        for (band, (level, &coeff)) in self.levels.iter_mut().zip(coeffs).enumerate() {
             let (mut s1, mut s2) = (0i64, 0i64);
             for &x in samples {
                 let s = x as i64 + ((coeff * s1) >> 15) - s2;
@@ -68,6 +76,16 @@ impl Spectrum {
             let target = (bits - LEVEL_FLOOR).clamp(0, MAX_LEVEL as i32) as u64;
 
             *level = target.max(level.saturating_sub(DECAY));
+
+            let (peak, age) = (&mut self.peaks[band], &mut self.peak_age[band]);
+            if *level >= *peak {
+                *peak = *level;
+                *age = 0;
+            } else if *age < PEAK_HOLD {
+                *age += 1;
+            } else {
+                *peak -= 1;
+            }
         }
     }
 }

@@ -102,10 +102,9 @@ fn play_track(
     let mut played: u64 = 0;
     let mut paused = false;
     let mut spectrum = Spectrum::new();
-    let mut ui = ui::Ui::default();
     let mut chunk = [0u8; CHUNK_BYTES];
 
-    let mut draw = |terminal: &mut Terminal<AnssBackend>, spectrum: &Spectrum, paused: bool, volume: i32, played: u64| {
+    let draw = |terminal: &mut Terminal<AnssBackend>, spectrum: &Spectrum, paused: bool, volume: i32, played: u64| {
         let view = ui::View {
             name,
             track_idx,
@@ -115,8 +114,9 @@ fn play_track(
             volume,
             paused,
             levels: &spectrum.levels,
+            peaks: &spectrum.peaks,
         };
-        let _ = terminal.draw(|frame| ui.render(frame, &view));
+        let _ = terminal.draw(|frame| ui::render(frame, &view));
     };
     draw(terminal, &spectrum, paused, *volume, played);
 
