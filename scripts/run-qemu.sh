@@ -5,10 +5,11 @@
 #
 #   --pc   Boot it the way a real PC looks instead (docs/real-hardware.md):
 #          no virtio devices at all, a plain VGA card whose UEFI GOP
-#          framebuffer is the only display, 4 GiB of RAM, 6 CPUs. Only
-#          what AnssOS has a real-hardware driver for works here, so
-#          input is the serial console for now and there's no disk or
-#          audio. Must be the first argument; the rest still go to QEMU.
+#          framebuffer is the only display, 4 GiB of RAM, 6 CPUs, and a
+#          USB keyboard on an xHCI controller. Only what AnssOS has a
+#          real-hardware driver for works here, so there's no disk or
+#          audio yet. Must be the first argument; the rest still go to
+#          QEMU.
 #
 # Requires: qemu-system-x86_64, OVMF firmware.
 #   sudo apt-get install -y qemu-system-x86 ovmf
@@ -183,6 +184,8 @@ if [ "$PC_MODE" = 1 ]; then
         -m 4G
         -smp 6
         -device VGA,xres="$XRES",yres="$YRES"
+        -device qemu-xhci,id=xhci
+        -device usb-kbd,id=usbkbd,bus=xhci.0
     )
 else
     machine_args=(

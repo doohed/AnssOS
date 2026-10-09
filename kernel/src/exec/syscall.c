@@ -436,6 +436,16 @@ static int poll_console_char(void) {
     return input_poll_char();
 }
 
+/* One idle moment in a blocking read. `int 0x80` is an interrupt gate, so
+ * a syscall runs with interrupts off -- and a read that waits for a key
+ * for seconds would stop the clock for seconds: no timer ticks, so the
+ * uptime freezes and a held USB key never starts repeating (its repeat is
+ * timed by the tick). Letting interrupts in here is safe: the tick never
+ * preempts ring 0 (see idt.c's irq_handler()). */
+static void wait_for_input(void) {
+    asm volatile("sti; pause; cli");
+}
+
 /* fd 0 in canonical mode (the default -- see ICANON in drivers/tty.h) is
  * line-buffered, matching the shell's own read_line(): polls both input
  * sources, echoes as it goes, stops at Enter or `len` bytes. In raw mode
@@ -500,7 +510,7 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
                 if (n > 0) {
                     break; /* VMIN=1/VTIME=0: at least one byte, don't wait for more. */
                 }
-                asm volatile("pause");
+                wait_for_input();
                 continue;
             }
             bytes[n++] = (char)c;
@@ -511,7 +521,7 @@ static int64_t sys_read_impl(int fd, void *buf, size_t len) {
     while (n < len) {
         int c = poll_console_char();
         if (c < 0) {
-            asm volatile("pause");
+            wait_for_input();
             continue;
         }
         if (c == '\n' || c == '\r') {

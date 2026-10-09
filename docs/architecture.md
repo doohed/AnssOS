@@ -156,13 +156,14 @@ Two independent output paths, both fed by `kprintf`:
 
 Input is equally dual: `shell.c`'s `read_line()` and the read/poll
 syscalls call `input_poll_char()` (`drivers/input.c`), which polls the
-virtio keyboard (needs a graphical window with focus) and COM1 on
-every iteration, whichever has a byte ready. Real-hardware keyboard
-drivers will join it there. Keys with no single byte --
-arrows, Home/End, Delete, Page Up/Down -- come out of the virtio
-keyboard as the escape sequences a VT100-style terminal sends (`ESC [ A`
-for Up, `ESC [ 3 ~` for Delete, ...), so a program sees the same bytes
-from either input.
+virtio keyboard (needs a graphical window with focus), USB keyboards
+(`drivers/usb/`: an xHCI driver plus the HID boot-protocol keyboard,
+polled, with hot-plug but no hubs yet) and COM1 on every iteration,
+whichever has a byte ready. Both keyboards translate through one keymap
+(`drivers/keymap.c`, US QWERTY): keys with no single byte -- arrows,
+Home/End, Delete, Page Up/Down -- come out as the escape sequences a
+VT100-style terminal sends (`ESC [ A` for Up, `ESC [ 3 ~` for Delete,
+...), so a program sees the same bytes from every input.
 
 The kernel boots into the userland shell, `/bin/sh` ([sh.md](sh.md)),
 and falls back to the kernel-resident `shell.c` if it ever exits.

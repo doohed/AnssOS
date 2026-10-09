@@ -6,14 +6,14 @@ but almost everything here applies to any modern x86_64 UEFI PC.
 
 ## Where things stand
 
-Phase 1 is done in QEMU, waiting on the real-PC boot (step 1d): the
-kernel boots to a working screen and shell with no virtio devices at
-all. Everything else still only has a virtio driver:
+Phase 1 is done: the real PC boots to the shell on its own screen
+(third attempt, see step 1d). Everything else still only has a virtio
+driver:
 
 | Need | Today | On the real PC |
 |---|---|---|
-| Screen | virtio-gpu, or the GOP framebuffer (`drivers/display.c`) | The RX 5600 XT's GOP framebuffer, handed over by Limine -- **works in QEMU, untested on the PC** |
-| Keyboard | virtio-input, or COM1 | PS/2 if the board has a port, otherwise USB via xHCI |
+| Screen | virtio-gpu, or the GOP framebuffer (`drivers/display.c`) | **Done:** the RX 5600 XT's GOP framebuffer, handed over by Limine |
+| Keyboard | virtio-input, USB (`drivers/usb/`), or COM1 | USB via xHCI (the board has no PS/2 port) -- **works in QEMU, untested on the PC** |
 | Disk | virtio-blk, blkfs from sector 0 | NVMe (or AHCI for SATA), inside a dedicated GPT partition |
 | Audio | virtio-sound | Intel HD Audio controller + Realtek codec, and the GPU's HDMI/DP audio |
 | Timer | LAPIC timer calibrated against the ACPI PM timer; PIT through the 8259 as a fallback (`drivers/timer.c`) | The PIT path hung the first real boot; the LAPIC timer needs no routing |
@@ -69,10 +69,10 @@ and phase 6 (which codec and pins).
 
 ## Phase 1 -- Device interfaces and the GOP framebuffer
 
-**Status: 1a-1c done and verified in `run-qemu.sh --pc`** (1920x1080 GOP,
-4 GiB, no virtio devices, with and without a serial port): splash,
-scrolling log, `sh`, and `scarf` full-screen. Step 1d, the first boot
-on the real PC, is next. One fix beyond the plan: `serial_init()` now
+**Status: done, on the real PC too.** 1a-1c verified in `run-qemu.sh
+--pc` (1920x1080 GOP, 4 GiB, no virtio devices, with and without a
+serial port): splash, scrolling log, `sh`, and `scarf` full-screen. 1d
+took three boots on the real PC, below. One fix beyond the plan: `serial_init()` now
 checks a UART is really at COM1, because a missing one reads as an
 endless stream of phantom `0xFF` key presses -- which the shell, now
 running without a keyboard, would otherwise have received.
@@ -100,6 +100,8 @@ page 0, read it as a failure, and the filesystem root was never
 created. `pmm_init()` now always reserves page 0; page-fault dumps also
 print `cr2` (the faulting address), and a missing VFS root stops boot
 with a message instead of a fault.
+
+**Attempt 3: boots to the `sh` prompt.** No keyboard yet (phase 3).
 
 The goal: boot on the PC and see the kernel log and the shell on screen.
 
@@ -159,6 +161,21 @@ invisible.
 
 ## Phase 3 -- Keyboard
 
+**Status: 3b done in QEMU** (`run-qemu.sh --pc` now has a `qemu-xhci`
+controller with a `usb-kbd`), waiting on the real PC. 3a was skipped:
+the board has no PS/2 port. Verified by typing through QMP: plain and
+shifted characters, arrows and Delete through `sh`'s line editor,
+Backspace, Ctrl-U, key repeat (19 characters from a 1.2 s hold), unplug
+and replug (hot-plug), and a keyboard behind a hub reported as
+unsupported instead of failing silently. On the PC, the boot log lists
+each xHCI controller and each device found (`usb: port N: vendor:product,
+speed, class`), which is what to photograph if the keyboard doesn't work.
+
+Key repeat turned up a latent bug: a blocking `read()` spun in the
+kernel with interrupts off (`int 0x80` is an interrupt gate), so the
+tick -- and with it the uptime -- stopped while a program waited for a
+key. The read loops now let interrupts in while they wait.
+
 **3a. PS/2 (i8042)**, about 150 lines: init the controller, enable the
 keyboard port, register IRQ1 with `irq_register()` (the PIC path already
 works), translate scan code set 1 to the same bytes and escape sequences
@@ -179,11 +196,14 @@ thousand lines):
    the device and configuration descriptors.
 5. For a HID keyboard: Set Configuration, Set Protocol (boot protocol),
    then poll its interrupt-IN endpoint for 8-byte boot reports and turn
-   key-down transitions into bytes, plus key repeat driven by the PIT.
+   key-down transitions into bytes, plus key repeat driven by the timer
+   tick. HID usages are converted to Linux key codes so the virtio
+   keyboard and this one share one keymap (`drivers/keymap.c`).
 
-First version supports a keyboard plugged **directly** into a rear port.
-USB hubs (including ones inside monitors, and some front-panel wiring)
-come after, as a follow-up.
+First version supports a keyboard plugged **directly** into a rear port,
+including after boot. USB hubs (including ones inside monitors, and some
+front-panel wiring) come after, as a follow-up: a hub is logged as
+unsupported and skipped.
 
 ## Phase 4 -- Disk
 

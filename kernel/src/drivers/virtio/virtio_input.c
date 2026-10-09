@@ -1,5 +1,6 @@
 #include "virtio_input.h"
 #include "virtio.h"
+#include "../keymap.h"
 #include "../pci.h"
 #include "../serial.h"
 #include "../../boot/requests.h"
@@ -58,59 +59,10 @@ static int shift_held;
 static int ctrl_held;
 static int initialized; /* Guards virtio_input_poll_char() if init never ran or failed. */
 
-/* Keys that have no single byte -- arrows, Home/End, Delete, PgUp/PgDn
- * -- come out as the escape sequences a VT100-style terminal sends for
- * them (ESC [ A for Up, ESC [ 3 ~ for Delete, ...), exactly what a
- * program reading a serial terminal already sees. This driver hands out
- * one byte per poll, so a special key returns ESC and parks the rest of
- * its sequence here for the next polls. */
+/* A key's bytes come from keymap_bytes() (drivers/keymap.c); this
+ * driver hands out one byte per poll, so a multi-byte escape sequence
+ * returns its first byte and parks the rest here for the next polls. */
 static const char *pending_seq;
-
-struct special_key {
-    uint16_t code;
-    const char *seq; /* what follows the ESC */
-};
-
-static const struct special_key SPECIAL_KEYS[] = {
-    {102, "[H"},  /* Home */
-    {103, "[A"},  /* Up */
-    {104, "[5~"}, /* Page Up */
-    {105, "[D"},  /* Left */
-    {106, "[C"},  /* Right */
-    {107, "[F"},  /* End */
-    {108, "[B"},  /* Down */
-    {109, "[6~"}, /* Page Down */
-    {111, "[3~"}, /* Delete */
-};
-
-/* US QWERTY: Linux key codes (see the kernel's input-event-codes.h) ->
- * ASCII. 0 means "no mapping, drop the key".
- *
- * Escape (code 1) matters more than it looks: it's the only way out of
- * insert mode in userland/scarf.c, and without it modal editing is
- * impossible on this input path. Over serial the terminal sends 0x1b
- * itself, so this gap only ever showed up in a graphical window. */
-static const char KEYMAP_LOWER[62] = {
-    [1] = 0x1b,  [2] = '1',  [3] = '2',  [4] = '3',   [5] = '4',  [6] = '5',   [7] = '6',
-    [8] = '7',   [9] = '8',  [10] = '9', [11] = '0',  [12] = '-', [13] = '=',  [14] = '\b',
-    [15] = '\t', [16] = 'q', [17] = 'w', [18] = 'e',  [19] = 'r', [20] = 't',  [21] = 'y',
-    [22] = 'u',  [23] = 'i', [24] = 'o', [25] = 'p',  [26] = '[', [27] = ']',  [28] = '\n',
-    [30] = 'a',  [31] = 's', [32] = 'd', [33] = 'f',  [34] = 'g', [35] = 'h',  [36] = 'j',
-    [37] = 'k',  [38] = 'l', [39] = ';', [40] = '\'', [41] = '`', [43] = '\\', [44] = 'z',
-    [45] = 'x',  [46] = 'c', [47] = 'v', [48] = 'b',  [49] = 'n', [50] = 'm',  [51] = ',',
-    [52] = '.',  [53] = '/', [57] = ' ',
-};
-
-/* The shifted half of the same layout. Previously shift only uppercased
- * letters, which left every shifted symbol unreachable -- including ':',
- * without which userland/scarf.c has no way to type :w or :q. Codes absent
- * here fall back to KEYMAP_LOWER (with a-z uppercased), so an unshifted
- * key never stops working just because its shifted form is unlisted. */
-static const char KEYMAP_UPPER[62] = {
-    [2] = '!',  [3] = '@',  [4] = '#',  [5] = '$',  [6] = '%',  [7] = '^',  [8] = '&',
-    [9] = '*',  [10] = '(', [11] = ')', [12] = '_', [13] = '+', [26] = '{', [27] = '}',
-    [39] = ':', [40] = '"', [41] = '~', [43] = '|', [51] = '<', [52] = '>', [53] = '?',
-};
 
 static char lower_char(char c) {
     if (c >= 'A' && c <= 'Z') {
@@ -255,9 +207,7 @@ int virtio_input_poll_char(void) {
             continue;
         }
 
-        /* Tracked like shift, and checked before the KEYMAP_LOWER bounds
-         * test below because KEY_RIGHTCTRL (97) sits well past the end of
-         * that table. Needed for userland/scarf.c's vim window commands,
+        /* Tracked like shift. Needed for scarf's vim window commands,
          * which are all Ctrl-w prefixed -- over serial the terminal
          * produces the 0x17 control byte itself, so this only ever
          * mattered in a graphical window. */
@@ -270,32 +220,14 @@ int virtio_input_poll_char(void) {
             continue; /* Only care about press (1) and repeat (2), not release (0). */
         }
 
-        int special = 0;
-        for (size_t i = 0; i < sizeof(SPECIAL_KEYS) / sizeof(SPECIAL_KEYS[0]); i++) {
-            if (SPECIAL_KEYS[i].code == ev.code) {
-                pending_seq = SPECIAL_KEYS[i].seq;
-                special = 1;
-                break;
-            }
-        }
-        if (special) {
-            return 0x1b;
-        }
-
-        if (ev.code >= sizeof(KEYMAP_LOWER) / sizeof(KEYMAP_LOWER[0])) {
+        const char *bytes = keymap_bytes(ev.code, (shift_held ? KEYMOD_SHIFT : 0) |
+                                                      (ctrl_held ? KEYMOD_CTRL : 0));
+        if (bytes == NULL) {
             continue;
         }
-        char c = KEYMAP_LOWER[ev.code];
-        if (ctrl_held && c >= 'a' && c <= 'z') {
-            c = (char)(c - 'a' + 1); /* Ctrl-A..Ctrl-Z -> 0x01..0x1a, as a terminal sends. */
-        } else if (shift_held && KEYMAP_UPPER[ev.code] != '\0') {
-            c = KEYMAP_UPPER[ev.code];
-        } else if (shift_held && c >= 'a' && c <= 'z') {
-            c = (char)(c - 'a' + 'A');
+        if (bytes[1] != '\0') {
+            pending_seq = bytes + 1;
         }
-        if (c == '\0') {
-            continue;
-        }
-        return (unsigned char)c;
+        return (unsigned char)bytes[0];
     }
 }

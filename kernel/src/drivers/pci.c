@@ -140,6 +140,21 @@ const struct pci_device *pci_find_device_nth(uint16_t vendor_id, uint16_t device
     return NULL;
 }
 
+const struct pci_device *pci_find_class_nth(uint8_t class_code, uint8_t subclass, uint8_t prog_if,
+                                            int index) {
+    int seen = 0;
+    for (int i = 0; i < device_count; i++) {
+        const struct pci_device *d = &devices[i];
+        if (d->class_code == class_code && d->subclass == subclass && d->prog_if == prog_if) {
+            if (seen == index) {
+                return d;
+            }
+            seen++;
+        }
+    }
+    return NULL;
+}
+
 void pci_print_devices(void) {
     for (int i = 0; i < device_count; i++) {
         print_device(&devices[i]);

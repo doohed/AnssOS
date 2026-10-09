@@ -9,6 +9,8 @@
 #include "drivers/display.h"
 #include "drivers/pci.h"
 #include "drivers/timer.h"
+#include "drivers/usb/usb.h"
+#include "drivers/usb/usb_kbd.h"
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_blk.h"
 #include "drivers/virtio/virtio_input.h"
@@ -177,10 +179,17 @@ void kmain(void) {
     /* The keyboard is optional: COM1 always works as one (see
      * drivers/input.c), and a real PC with no keyboard driver yet should
      * still reach the shell, if only to show that everything else did. */
-    if (virtio_input_init() == 0) {
+    int virtio_kbd = virtio_input_init() == 0;
+    if (virtio_kbd) {
         kprintf("M6 complete: virtio-input keyboard ready.\n");
-    } else {
-        kprintf("No keyboard driver for this machine -- input only over COM1, if it has one.\n");
+    }
+    int xhci_count = usb_init();
+    if (usb_kbd_count() > 0) {
+        kprintf("USB keyboard ready (%d xHCI controller(s)).\n", xhci_count);
+    } else if (!virtio_kbd) {
+        kprintf("No keyboard found (%d xHCI controller(s)) -- one plugged in later still works; "
+                "until then, input only over COM1, if there is one.\n",
+                xhci_count);
     }
 
     vfs_init();

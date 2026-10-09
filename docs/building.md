@@ -30,9 +30,10 @@ wrappers around them, if you'd rather not call them directly):
 
 `./scripts/run-qemu.sh --pc` boots it the way a real PC looks instead:
 no virtio devices, a plain VGA card whose UEFI GOP framebuffer is the
-only display, 4 GiB of RAM and 6 CPUs. It's where real-hardware drivers
-get tested first (see [real-hardware.md](real-hardware.md)); until there
-is one for the keyboard, type into the serial console.
+only display, 4 GiB of RAM, 6 CPUs, and a USB keyboard on an xHCI
+controller (type into the QEMU window, or the serial console). It's
+where real-hardware drivers get tested first (see
+[real-hardware.md](real-hardware.md)).
 
 `run-qemu.sh` does **not** build anything itself — it errors out if
 `AnssOS.iso` doesn't exist yet, telling you to run `build-iso.sh` first.

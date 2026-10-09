@@ -37,6 +37,12 @@ const struct pci_device *pci_find_device(uint16_t vendor_id, uint16_t device_id)
  * last match. */
 const struct pci_device *pci_find_device_nth(uint16_t vendor_id, uint16_t device_id, int index);
 
+/* The `index`'th device (0-based) of a class/subclass/programming
+ * interface -- how drivers for standard controllers find theirs (xHCI is
+ * 0C.03 prog-if 30), whatever the vendor. NULL past the last match. */
+const struct pci_device *pci_find_class_nth(uint8_t class_code, uint8_t subclass, uint8_t prog_if,
+                                            int index);
+
 /* Re-lists whatever pci_enumerate() already found, via kprintf, without
  * rescanning -- used by the shell's `lspci` builtin. */
 void pci_print_devices(void);
