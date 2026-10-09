@@ -166,24 +166,6 @@ void kmain(void) {
         fbconsole_write(display_name());
         fbconsole_write("\n\n");
         kprintf("M5 complete: framebuffer console live via %s.\n", display_name());
-
-        /* Paint a small gradient swatch in the bottom-right corner --
-         * proof of direct pixel writes through the display (not just
-         * text). Kept clear of the console's text region above. */
-        uint32_t swatch_w = fb.width / 6;
-        uint32_t swatch_h = fb.height / 6;
-        uint32_t ox = fb.width - swatch_w;
-        uint32_t oy = fb.height - swatch_h;
-        for (uint32_t y = 0; y < swatch_h; y++) {
-            for (uint32_t x = 0; x < swatch_w; x++) {
-                uint32_t r = (x * 255) / swatch_w;
-                uint32_t g = (y * 255) / swatch_h;
-                uint32_t b = 255 - r;
-                fb.pixels[(uint64_t)(oy + y) * fb.pitch + (ox + x)] =
-                    (b << 16) | (g << 8) | r; /* BGRX8888 */
-            }
-        }
-        display_flush();
     } else {
         kprintf("Skipping M5 (no display: no virtio-gpu, no firmware framebuffer).\n");
     }

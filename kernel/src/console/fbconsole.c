@@ -1,20 +1,24 @@
 #include "fbconsole.h"
-#include "font8x8_basic.h"
-#include "font8x8_ext.h"
+#include "font8x16.h"
 #include "../lib/string.h"
 
 #include <stdint.h>
 
 #define GLYPH_W 8
-#define GLYPH_H 8
+#define GLYPH_H 16
+/* Blank margin around the text area, in font pixels (times the scale). */
+#define PAD 16
 #define FG_COLOR 0x00FFFFFFu /* BGRX8888: white. */
 #define BG_COLOR 0x00000000u /* BGRX8888: black. */
 
 static struct framebuffer *fb;
 /* Each font pixel is drawn as a scale x scale block, so a cell is
- * cell_w x cell_h screen pixels -- 8x8 glyphs at 1:1 are unreadably small
- * on a 1080p or 4K monitor. Picked from the width in fbconsole_init(). */
+ * cell_w x cell_h screen pixels -- 8x16 glyphs at 1:1 are too small on a
+ * 1080p or 4K monitor. Picked from the width in fbconsole_init(). The
+ * grid starts pad_x/pad_y pixels in from the top-left corner, with at
+ * least that much margin on the other two sides as well. */
 static uint32_t scale, cell_w, cell_h;
+static uint32_t pad_x, pad_y;
 static uint32_t cols, rows;
 /* The part of the screen drawn since the last flush, in pixels:
  * [dirty_x0, dirty_x1) x [dirty_y0, dirty_y1), empty when x0 >= x1. */
@@ -28,7 +32,7 @@ static int bold, dim;
 
 /* The 16 ANSI colors (SGR 30-37/90-97 foreground, 40-47/100-107
  * background), as 0x00RRGGBB -- which is what a BGRX8888 pixel is in a
- * little-endian uint32_t. Picked to read well on black at 8x8 pixels:
+ * little-endian uint32_t. Picked to read well on black at small sizes:
  * the dark eight are mid-bright rather than the dim classic VGA set. */
 static const uint32_t PALETTE[16] = {
     0x00000000u, 0x00D0504Fu, 0x0060B050u, 0x00D8A840u, /* black red green yellow */
@@ -99,27 +103,27 @@ static void fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t c
 static uint32_t utf8_cp;
 static int utf8_need; /* continuation bytes still expected */
 
-/* The bitmap for a code point: ASCII from font8x8_basic, the extras in
- * font8x8_ext.h (box drawing, prompt-theme arrows, a few symbols), and
+/* The bitmap for a code point: ASCII and the extras (box drawing,
+ * prompt-theme arrows and rounds, a few symbols) from font8x16.h, and
  * '?' for anything else. */
 static const uint8_t *glyph_for(uint32_t cp) {
     if (cp < 128) {
-        return font8x8_basic[cp];
+        return font8x16_ascii[cp];
     }
-    for (size_t i = 0; i < sizeof(font8x8_ext) / sizeof(font8x8_ext[0]); i++) {
-        if (font8x8_ext[i].cp == cp) {
-            return font8x8_ext[i].rows;
+    for (size_t i = 0; i < sizeof(font8x16_ext) / sizeof(font8x16_ext[0]); i++) {
+        if (font8x16_ext[i].cp == cp) {
+            return font8x16_ext[i].rows;
         }
     }
-    return font8x8_basic['?'];
+    return font8x16_ascii['?'];
 }
 
 static void draw_glyph(uint32_t col, uint32_t row, uint32_t cp) {
     const uint8_t *glyph = glyph_for(cp);
-    uint32_t base_x = col * cell_w;
-    uint32_t base_y = row * cell_h;
-    /* Bold is drawn as the bright variant of a dark color: an 8x8
-     * bitmap font has no bold weight. */
+    uint32_t base_x = pad_x + col * cell_w;
+    uint32_t base_y = pad_y + row * cell_h;
+    /* Bold is drawn as the bright variant of a dark color: the bitmap
+     * font has no bold weight. */
     int fg_i = (bold && fg_index >= 0 && fg_index < 8) ? fg_index + 8 : fg_index;
     uint32_t fg = fg_i >= 0 ? PALETTE[fg_i] : FG_COLOR;
     uint32_t bg = bg_index >= 0 ? PALETTE[bg_index] : BG_COLOR;
@@ -152,20 +156,20 @@ static void erase_cells(uint32_t col, uint32_t row, uint32_t count) {
     if (count > cols - col) {
         count = cols - col;
     }
-    fill_rect(col * cell_w, row * cell_h, count * cell_w, cell_h, BG_COLOR);
-    mark_dirty(col * cell_w, row * cell_h, count * cell_w, cell_h);
+    uint32_t x = pad_x + col * cell_w, y = pad_y + row * cell_h;
+    fill_rect(x, y, count * cell_w, cell_h, BG_COLOR);
+    mark_dirty(x, y, count * cell_w, cell_h);
 }
 
 /* Moves the text area up one row of cells. Only the rows * cell_h pixels
- * the grid covers take part -- the leftover strip under the last row
- * (when the height isn't a multiple of cell_h) stays blank. */
+ * the grid covers take part -- the margins stay blank. */
 static void scroll(void) {
     uint64_t row_pixels = (uint64_t)fb->pitch * cell_h;
     uint64_t text_pixels = row_pixels * rows;
-    memmove((void *)fb->pixels, (void *)(fb->pixels + row_pixels),
-            (text_pixels - row_pixels) * sizeof(uint32_t));
-    fill_rect(0, (rows - 1) * cell_h, fb->width, cell_h, BG_COLOR);
-    mark_dirty(0, 0, fb->width, rows * cell_h);
+    volatile uint32_t *top = fb->pixels + (uint64_t)fb->pitch * pad_y;
+    memmove((void *)top, (void *)(top + row_pixels), (text_pixels - row_pixels) * sizeof(uint32_t));
+    fill_rect(0, pad_y + (rows - 1) * cell_h, fb->width, cell_h, BG_COLOR);
+    mark_dirty(0, pad_y, fb->width, rows * cell_h);
 }
 
 void fbconsole_init(struct framebuffer *the_fb) {
@@ -173,8 +177,9 @@ void fbconsole_init(struct framebuffer *the_fb) {
     scale = fb->width >= 3200 ? 3 : fb->width >= 1600 ? 2 : 1;
     cell_w = GLYPH_W * scale;
     cell_h = GLYPH_H * scale;
-    cols = fb->width / cell_w;
-    rows = fb->height / cell_h;
+    pad_x = pad_y = PAD * scale;
+    cols = (fb->width - 2 * pad_x) / cell_w;
+    rows = (fb->height - 2 * pad_y) / cell_h;
     fbconsole_clear();
 }
 

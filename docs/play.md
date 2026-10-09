@@ -14,14 +14,12 @@ written in Rust (`userland/rust/play/`). It plays a playlist of files over the
 A solid header bar with the track number; the file name and format; a
 spectrum analyzer with peak markers; a progress bar with elapsed and
 total time; the play state and a volume gauge; and a footer of key
-hints in reversed keycaps. The console's font (`font8x8_basic`)
-is ASCII-only, and this screen is drawn in monochrome: reverse video
-(`ESC[7m`) only, no colors. (The console has since gained the 16 ANSI
-colors, see `docs/architecture.md`'s console section; `play` predates
-them.) But a
-reverse-video *space* is a solid cell, so the header and footer bars, the
-spectrum's bars and the gauges' fill are all reversed spaces. A `#` in an
-8×8 font reads as a cross-hatched grid instead.
+hints in reversed keycaps. The screen is drawn in monochrome: reverse
+video (`ESC[7m`) only, no colors. (The console has since gained the 16
+ANSI colors, see `docs/architecture.md`'s console section; `play`
+predates them.) But a reverse-video *space* is a solid cell, so the
+header and footer bars, the spectrum's bars and the gauges' fill are all
+reversed spaces.
 
 The content is a column capped at 100 columns, centred horizontally and
 vertically between the header and footer. The spectrum gets at most one
@@ -29,8 +27,7 @@ row per level (20), so the screen doesn't stretch edge to edge on a large
 framebuffer. The spectrum's 20 bars always span exactly the column's
 width, lined up with the progress and status rows below; columns that
 don't divide evenly are spread across the gaps. Text lines are separated
-by a blank row, because the 8×8 font has no leading and adjacent lines
-touch. Everything adapts down to small terminals: the spectrum shrinks
+by a blank row, so the column reads as separate items. Everything adapts down to small terminals: the spectrum shrinks
 first (minimum 3 rows), and labels that wouldn't fit are dropped.
 
 ## Keys

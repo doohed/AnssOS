@@ -1,12 +1,10 @@
 //! The player screen.
 //!
-//! The console's font (font8x8_basic) is ASCII-only, and this screen is
-//! drawn in monochrome -- reverse video only, no colors -- but a
-//! reverse-video *space* is a solid cell, and
-//! that is what makes this look like more than a terminal dump: the
-//! header/footer bars, the spectrum's bars and the gauges' fill are all
-//! reversed spaces, so they render as solid blocks rather than the
-//! cross-hatched grid a `#` turns into in an 8x8 font.
+//! This screen is drawn in monochrome -- reverse video only, no colors
+//! -- but a reverse-video *space* is a solid cell, and that is what makes
+//! this look like more than a terminal dump: the header/footer bars, the
+//! spectrum's bars and the gauges' fill are all reversed spaces, so they
+//! render as solid blocks.
 //!
 //! ```text
 //!  AnssOS play                                              track 2 of 2   <- header bar
@@ -54,9 +52,8 @@ const MAX_WIDTH: u16 = 100;
 const MAX_SPECTRUM_ROWS: u16 = MAX_LEVEL as u16;
 const MIN_SPECTRUM_ROWS: u16 = 3;
 /// Rows the content column needs besides the spectrum: track, gap,
-/// format, gap, axis, gap, progress, gap, status. The 8x8 font has no
-/// leading, so stacked text lines touch -- a blank row between any two
-/// text lines is what keeps them readable.
+/// format, gap, axis, gap, progress, gap, status -- a blank row between
+/// any two text lines, so the column reads as separate items.
 const FIXED_ROWS: u16 = 9;
 
 /// Axis labels: (band index, text). Bands are log-spaced 60 Hz-7 kHz,

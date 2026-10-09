@@ -71,7 +71,7 @@ AnssOS/
 │   ├── docker-shell.sh      # builds the container and drops into it
 │   ├── format.sh            # clang-format wrapper (apply or --check)
 │   ├── gen-test-tone.py     # synthesizes the testtone.wav fixture for play
-│   ├── gen-font-ext.py      # generates the console's extra glyphs (font8x8_ext.h)
+│   ├── gen-font.py          # generates the console font (font8x16.h) from Spleen
 │   └── disk-put.py          # writes host files straight onto AnssOS-disk.img
 ├── userland/              # ring-3 programs and the hand-written libc
 │   ├── crt0.S               # reads argc/argv off the initial stack, calls main
@@ -116,8 +116,8 @@ AnssOS/
         ├── console/
         │   ├── fbconsole.{c,h}          # bitmap-font console + ANSI/CSI parser
         │   ├── splash.{c,h}             # boot splash
-        │   ├── font8x8_basic.h          # vendored public-domain 8x8 font
-        │   └── font8x8_ext.h            # extra glyphs, from scripts/gen-font-ext.py
+        │   ├── font8x16.h               # the 8x16 font, from scripts/gen-font.py
+        │   └── spleen/                  # vendored Spleen 8x16 font (BSD 2-Clause)
         ├── fs/
         │   ├── vfs.{c,h}                # in-memory directory/file tree
         │   └── blkfs.{c,h}              # whole-tree persistence over virtio-blk

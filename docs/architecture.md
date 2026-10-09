@@ -119,12 +119,14 @@ Two independent output paths, both fed by `kprintf`:
 - **Serial (COM1).** The primary debug console, and a real interactive
   terminal -- `run-qemu.sh` passes `-serial stdio`, so the host
   terminal *is* the console.
-- **Framebuffer.** `console/fbconsole.c` draws an 8x8 bitmap font over
+- **Framebuffer.** `console/fbconsole.c` draws an 8x16 bitmap font over
   whatever `drivers/display.c` found -- virtio-gpu, or the firmware's GOP
   framebuffer, drawn in a RAM copy and copied to the screen a changed
-  rectangle at a time (reading video memory back is slow). Each font
-  pixel becomes a 2x2 block from 1600 pixels wide and 3x3 from 3200, so
-  text stays readable on a 1080p or 4K monitor. It understands a subset
+  rectangle at a time (reading video memory back is slow). The text grid
+  sits inside a 16-pixel margin. Each font pixel (and the margin) is
+  scaled 2x from 1600 pixels wide and 3x from 3200, so text stays
+  readable on a 1080p or 4K monitor: 156x48 cells at 1280x800, 116x31 at
+  1920x1080. It understands a subset
   of ANSI/CSI escape sequences: cursor addressing, erase, and SGR for the 16 ANSI
   colors (foreground and background, from its own palette), bold (drawn
   as the bright color), dim (blended toward the background) and reverse
@@ -132,15 +134,17 @@ Two independent output paths, both fed by `kprintf`:
   the colored prompt of [sh](sh.md). Anything outside that subset is
   swallowed, not printed.
 
-  Text is UTF-8. The font is `font8x8_basic.h` for ASCII plus
-  `font8x8_ext.h` for about 30 extra glyphs: box drawing (`─ │ ┌ ╭ ├ ┼`
-  ...), the arrow and round segment ends a powerline-style prompt uses
-  (U+E0B0-U+E0B7), and `❯ ❮ ✔ ✘ · … ● █ ▌ ▐`. Any other character draws
-  as `?`. The extra glyphs are drawn as `#`/`.` pictures in
-  `scripts/gen-font-ext.py`, which generates the header; to add one,
-  draw it there and rerun the script. tile's per-pane terminal and the
-  ratatui backend (`anssos_tui::console_has()`) pass the same set
-  through. A
+  The font is [Spleen](https://github.com/fcambus/spleen) 8x16 (BSD
+  2-Clause, vendored in `console/spleen/`), made for terminals: each
+  glyph has space above and below it in its cell, so lines of text don't
+  touch. Text is UTF-8: ASCII plus 33 extra glyphs -- box drawing
+  (`─ │ ┌ ╭ ├ ┼` ...), the arrow and round segment ends a powerline-style
+  prompt uses (U+E0B0-U+E0B7), and `❯ ❮ ✔ ✘ · … ● █ ▌ ▐`. Any other
+  character draws as `?`. `scripts/gen-font.py` generates
+  `console/font8x16.h` from Spleen, plus `#`/`.` pictures of the few
+  glyphs Spleen lacks; to add a glyph, add it there (and to
+  `anssos_tui::console_has()`) and rerun the script. tile's per-pane
+  terminal and the ratatui backend pass the same set through. A
   redraw costs one flush; on virtio-gpu that currently transfers the
   *entire* framebuffer; see [scarf.md](scarf.md#performance).
 

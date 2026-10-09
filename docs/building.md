@@ -97,9 +97,9 @@ mount maps ownership back to you — but on a Linux host you'll want to
 
 `.clang-format` at the repo root defines the style (4-space indent, braces
 attached, pointers glued to the name). `scripts/format.sh` applies it to
-every `kernel/src/**/*.{c,h}` file except the two vendored headers
-(`boot/limine.h`, `console/font8x8_basic.h`), which stay as fetched
-upstream:
+every `kernel/src/**/*.{c,h}` file except `boot/limine.h`, which stays
+as fetched upstream, and `console/font8x16.h`, which
+`scripts/gen-font.py` generates:
 
 ```sh
 sudo apt-get install -y clang-format

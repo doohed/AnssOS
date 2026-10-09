@@ -19,7 +19,7 @@
 //! follows them.
 //!
 //! The arrows, rounds, frame and icons are glyphs the console draws
-//! beyond ASCII (kernel/src/console/font8x8_ext.h). Everything fits
+//! beyond ASCII (kernel/src/console/font8x16.h). Everything fits
 //! itself to the width: the path shortens from the left first, then the
 //! system name goes, then the right-hand segments.
 

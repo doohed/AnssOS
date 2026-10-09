@@ -3,9 +3,10 @@
 
 #include "../drivers/display.h"
 
-/* Small scrolling text console drawn with the font8x8_basic bitmap font */
-/* over a struct framebuffer (see drivers/display.h), scaled up 2x or 3x */
-/* on wide screens. Flushes the part it changed after every write. */
+/* Small scrolling text console drawn with an 8x16 bitmap font */
+/* (font8x16.h) over a struct framebuffer (see drivers/display.h), with a */
+/* margin around the text, both scaled up 2x or 3x on wide screens. */
+/* Flushes the part it changed after every write. */
 
 void fbconsole_init(struct framebuffer *fb);
 void fbconsole_clear(void);
@@ -19,7 +20,7 @@ void fbconsole_write(const char *s);
  * the only terminal and the kernel has no idea how big it is. */
 int fbconsole_size(uint32_t *out_cols, uint32_t *out_rows);
 
-/* One character cell's size in screen pixels (8x8 times the scale). */
+/* One character cell's size in screen pixels (8x16 times the scale). */
 void fbconsole_cell_size(uint32_t *out_w, uint32_t *out_h);
 
 /* Suppresses the per-character flush that
