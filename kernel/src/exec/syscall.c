@@ -38,6 +38,7 @@
 #define SYS_getdents 217
 #define SYS_getcwd 79
 #define SYS_pipe 22
+#define SYS_sched_yield 24
 
 /* AnssOS-native syscalls, 900+ -- unlike everything above, these have no
  * real Linux equivalent (Linux does audio via /dev/snd + ioctl, and
@@ -504,9 +505,21 @@ static int64_t sys_ioctl_impl(int fd, uint64_t request, void *argp) {
         task->termios = *(const struct k_termios *)argp;
         return 0;
     }
+    if (request == TIOCSWINSZ) {
+        if (!user_ptr_ok(argp, sizeof(struct k_winsize))) {
+            return -1;
+        }
+        task->winsize = *(const struct k_winsize *)argp;
+        return 0;
+    }
     if (request == TIOCGWINSZ) {
         if (!user_ptr_ok(argp, sizeof(struct k_winsize))) {
             return -1;
+        }
+        /* A TIOCSWINSZ override (a tile pane) wins over the console. */
+        if (task->winsize.ws_col != 0 && task->winsize.ws_row != 0) {
+            *(struct k_winsize *)argp = task->winsize;
+            return 0;
         }
         uint32_t cols, rows;
         /* No framebuffer console means the serial line is the only
@@ -623,6 +636,18 @@ static int64_t sys_audio_close_impl(void) {
  * is what lets a userland player check for a control key without
  * blocking the audio-feeding loop the way a raw-mode read() would. */
 static int64_t sys_poll_key_impl(void) {
+    /* A process whose stdin is a pipe (a tile pane) gets its keys from
+     * that pipe, not the physical keyboard -- otherwise it would steal
+     * keystrokes meant for tile itself. Same non-blocking contract, plus
+     * -2 once the pipe is closed for good (tile quitting), which a
+     * program can't otherwise tell apart from "no key yet". */
+    struct usertask *task = usermode_current_task();
+    if (task != NULL && task->stdin_pipe != NULL) {
+        uint8_t key;
+        int n = pipe_read(task->stdin_pipe, &key, 1);
+        return n == 1 ? key : (n < 0 ? -2 : -1);
+    }
+
     int c = virtio_input_poll_char();
     if (c < 0) {
         c = serial_poll_char();
@@ -741,6 +766,40 @@ static int64_t sys_wait_impl(int pid, int *status_ptr) {
     return target_pid;
 }
 
+/* "process N exited with code X". On the physical console normally --
+ * but a process whose stdout is a pipe is drawn by someone else (a tile
+ * pane), and kprintf() writing straight onto the framebuffer would land
+ * on top of whatever that program is drawing. Its exit goes to the
+ * serial log only; whoever waits for it gets the status from wait(). */
+static void serial_write_int(int v) {
+    char digits[12];
+    int n = 0;
+    unsigned int u = v < 0 ? (unsigned int)-v : (unsigned int)v;
+    do {
+        digits[n++] = (char)('0' + u % 10);
+        u /= 10;
+    } while (u != 0);
+    if (v < 0) {
+        serial_putc('-');
+    }
+    while (n > 0) {
+        serial_putc(digits[--n]);
+    }
+}
+
+static void log_exit(struct process *me, int code) {
+    int pid = me != NULL ? me->pid : -1;
+    if (me == NULL || me->task.stdout_pipe == NULL) {
+        kprintf("\nprocess %d exited with code %d\n", pid, code);
+        return;
+    }
+    serial_write("\nprocess ");
+    serial_write_int(pid);
+    serial_write(" exited with code ");
+    serial_write_int(code);
+    serial_write(" (piped stdout)\n");
+}
+
 void syscall_dispatch(struct interrupt_frame *frame) {
     uint64_t number = frame->rax;
     int64_t result;
@@ -809,10 +868,27 @@ void syscall_dispatch(struct interrupt_frame *frame) {
         case SYS_wait4:
             result = sys_wait_impl((int)frame->rdi, (int *)frame->rsi);
             break;
+        case SYS_sched_yield: {
+            /* Gives the CPU to the next runnable process now instead of
+             * at the next timer tick -- what a ring-3 loop polling an
+             * empty pipe (sh, tile, a program in a pane) does instead of
+             * burning its whole time slice. Exactly the timer-preemption
+             * path in arch/x86_64/idt.c's irq_handler(), with this
+             * syscall's own frame as the resume point: the process comes
+             * back as if the syscall had returned 0. */
+            struct process *me = process_current();
+            frame->rax = 0;
+            if (me != NULL) {
+                me->saved_rsp = (uint64_t)frame;
+                me->state = PROC_RUNNABLE;
+                return_to_kernel(0); /* noreturn -- back to the scheduler loop */
+            }
+            return;
+        }
         case SYS_exit: {
             struct process *me = process_current();
             int code = (int)frame->rdi;
-            kprintf("\nprocess %d exited with code %d\n", me != NULL ? me->pid : -1, code);
+            log_exit(me, code);
             if (me != NULL) {
                 process_close_stdio_pipes(me);
                 me->state = PROC_ZOMBIE;

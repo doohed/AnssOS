@@ -100,6 +100,10 @@ int poll_key(void) {
     return (int)syscall3(903, 0, 0, 0);
 }
 
+int sched_yield(void) {
+    return (int)syscall3(24, 0, 0, 0);
+}
+
 int pipe(int pipefd[2]) {
     return (int)syscall3(22, (long)(unsigned long)pipefd, 0, 0);
 }

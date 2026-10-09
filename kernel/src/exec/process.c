@@ -194,6 +194,7 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size, int
     /* Terminal settings belong to the terminal, not the program running
      * on it -- real Unix exec() doesn't reset them either. */
     struct k_termios saved_termios = p->task.termios;
+    struct k_winsize saved_winsize = p->task.winsize;
     /* M19: a pane's pipe-backed stdio (use_as_stdio(), exec/pipe.h) must
      * survive its own execve() into the real pane program -- without
      * this it would lose its pipe-backed fd 0/1 the instant it execs,
@@ -228,6 +229,7 @@ int process_exec(struct process *p, const uint8_t *image, size_t image_size, int
     memcpy(p->task.open_files, saved_files, sizeof(saved_files));
     p->task.cwd = saved_cwd;
     p->task.termios = saved_termios;
+    p->task.winsize = saved_winsize;
     p->task.stdin_pipe = saved_stdin_pipe;
     p->task.stdout_pipe = saved_stdout_pipe;
     memcpy(p->task.kernel_resume, saved_kernel_resume, sizeof(saved_kernel_resume));

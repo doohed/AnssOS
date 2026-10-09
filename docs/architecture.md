@@ -73,7 +73,7 @@ what went wrong building it; this is the shape of the result.
   process that would need to run to produce the data being waited for,
   since preemption (above) only fires on a ring-3 interruption, never
   ring-0. `pipe()` + the narrower `use_as_stdio()` (not general
-  `dup2()`) are what let `userland/tile.c` run independent `sh`
+  `dup2()`) are what let tile (`userland/rust/tile/`) run independent `sh`
   processes in tiled panes -- see [syscalls.md](syscalls.md#pipes-m19)
   and [tile.md](tile.md).
 

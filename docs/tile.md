@@ -1,9 +1,9 @@
 # sh and tile
 
-Two new pieces (M19-M21) that together make real tiling terminals
-possible: `userland/sh.c`, a small userland shell, and `userland/tile.c`,
-a fixed-grid multiplexer that runs multiple independent `sh` instances
-side by side.
+Two pieces (M19-M21, tile rewritten in M25) that together make real
+tiling terminals possible: `userland/sh.c`, a small userland shell, and
+`tile` (`userland/rust/tile/`), a fixed-grid multiplexer that runs
+multiple independent `sh` instances side by side.
 
 ```
 AnssOS:/> run sh                 # a standalone userland shell
@@ -43,7 +43,7 @@ for real file management; `sh` is built for running programs and light
 navigation inside a pane.
 
 Its `read_line()` reads one byte at a time in a loop that treats a `0`
-return as "no data yet, keep looping" — this works identically whether
+return as "no data yet, yield and try again" — this works identically whether
 fd 0 is the physical console (which never actually returns 0 in raw
 mode, it blocks internally instead) or a pipe (which does, per
 [syscalls.md](syscalls.md#pipes-m19)'s non-blocking design) — one code
@@ -51,49 +51,96 @@ path, not two.
 
 ## tile
 
+Rewritten in Rust with ratatui (`userland/rust/tile/`, M25). Each pane
+has its own terminal emulator, so anything that runs on the console
+runs in a pane too, including `scarf` and `play`.
+
+```
+ tile                                               pane 1 of 4     <- solid header
+ # pane 1 ####################### - pane 2 -----------------------  <- focused pane's title solid,
+ sh:/> ls                        # sh:/>                               others a rule
+   bin/                          #
+ sh:/> _                         #                                  <- solid divider
+ - pane 3 ----------------------- - pane 4 -----------------------
+ ...                             # ...
+ ^B 1-4  focus   ^B o  next   ^B ^B  send ^B   ^B q  quit           <- key hints
+```
+
 | Key | Action |
 |---|---|
-| `Ctrl-b` then a digit | switch focus to that pane |
-| `Ctrl-b q` | quit (closes every pane's stdin, waits for clean exit) |
+| `Ctrl-b` then a digit | focus that pane |
+| `Ctrl-b o` | focus the next pane |
+| `Ctrl-b Ctrl-b` | send a literal `Ctrl-b` to the pane (scarf's sidebar toggle) |
+| `Ctrl-b q` | quit: closes every pane's stdin and waits for them to exit |
 | anything else | goes to the focused pane |
 
-A fixed grid (1/2/2x2 panes, not a dynamic resizable tree — the exact
-feature `scarf` tried and reverted, sidestepped entirely by not having
-it), each cell scrollback-only: `sh` never emits cursor-addressing
-escapes, so there's no ANSI to interpret, just `\r`/`\n`/backspace
-bookkeeping. **Running `scarf`/`play` as a pane is out of scope** — they
-emit real ANSI (cursor addressing, `ESC[K`, reverse video) that this
-virtual terminal doesn't parse; that would need a real per-pane ANSI
-interpreter, i.e. reimplementing `fbconsole.c`'s parser once per pane.
-This isn't just "renders oddly in its cell" either: `TIOCGWINSZ` has no
-concept of panes and always reports the *physical* screen size, so a
-full-screen program run inside a pane draws with absolute coordinates
-across the whole screen, corrupting `tile`'s header and every other
-pane too — and its own input loop, written assuming a blocking
-console read, busy-loops redrawing at full speed the moment `read()`
-starts returning `0` (empty pipe) instead. `sh` guards against this
-directly rather than let it happen: `tile.c` passes a `--tile-pane`
-flag when spawning each pane, and `sh` refuses to run a short list of
-known full-screen programs (currently `scarf`, `play`) when that flag
-is set, with a clear error instead of a corrupted screen. It's a guard
-rail, not a fix — those programs still can't actually run in a pane,
-they just fail cleanly now instead of breaking the display.
+`tile` takes 1-4 panes. Two are side by side; three put the third across
+the full bottom row; four make a 2x2 grid. A pane whose shell exits shows
+`[exited]`, and tile exits once every pane has.
 
-Content grows top-down within each cell, like a real terminal, not
-bottom-pinned — a pane's cell is nearly full-screen tall (few panes,
-one shared header row), so an earlier version that bottom-aligned a
-few lines of prompt text looked like an empty box with text stuck at
-the very bottom. `draw_pane()` places scrollback right after the label
-row and blanks out whatever's left *below* it; once there's enough
-scrollback to fill the whole cell, the current line naturally lands on
-the last row with no blank rows left — real terminal-scrolling
-behavior falls out of the same code path, not a separate case.
+### How a pane works
 
-Spawning a pane is `pipe()` twice, `fork()`, the child closes the ends
-it doesn't need and `use_as_stdio()`s the rest before `execve()`, the
-parent keeps the other two — see [syscalls.md](syscalls.md#pipes-m19)
-for the exact pattern. Redraws only happen for panes that actually
-produced new output, not on a timer.
+1. **Spawning** (`pane.rs`). tile calls `pipe()` twice and `fork()`s.
+   The child closes the ends it doesn't need, plus every earlier pane's
+   fds (see "No close-on-exec" below). It points its stdin/stdout at the
+   pipes with `use_as_stdio()`, sets its **window size to the pane's**
+   with `TIOCSWINSZ`, and `exec`s `/bin/sh`.
+2. **Window size.** `TIOCSWINSZ` stores the size on the process, and it
+   is inherited by everything `sh` runs (see
+   [syscalls.md](syscalls.md#terminal-handling)). So `scarf` or `play`
+   started in a pane asks `TIOCGWINSZ` how big the terminal is and gets
+   the pane's size, and lays itself out inside it.
+3. **Output** (`vt.rs`). Everything a pane's programs write is fed
+   through a terminal emulator that understands exactly the console's
+   ANSI subset: cursor positioning, erase, reverse video, and immediate
+   wrap with scroll at the bottom. Each pane is a grid of cells. A
+   program's escape codes can therefore only ever affect its own pane;
+   `clear` in a pane clears that pane.
+4. **Drawing** (`ui.rs`). All the panes' grids, the titles, the dividers
+   and the key hints are composed into one ratatui frame. Ratatui sends
+   only the cells that changed since the last frame. The focused pane
+   shows its cursor as a solid cell, unless the program hid it (as
+   full-screen programs do).
+5. **Input.** tile polls the keyboard and writes each key into the
+   focused pane's stdin pipe. Programs that read keys with `read()`
+   (`sh`, scarf) get them from that pipe. So does `play`, which uses
+   `poll_key()`: the kernel reads a piped stdin instead of the keyboard
+   for it, so a program in a pane never steals keys meant for tile.
+6. **Quitting.** `Ctrl-b q` closes each pane's stdin. `sh` sees
+   end-of-input and exits. A program running in a pane quits first:
+   scarf on a closed `read()`, `play` because `poll_key()` returns -2 for
+   a closed pipe. tile reaps each pane as its output pipe closes.
+
+### Sharing the CPU
+
+Nothing here blocks: pipes never do, and keys are polled. A loop that
+just spun on an empty pipe would burn its whole time slice and starve
+everything else, including `play`'s audio decoding when it runs in a
+pane. So every such loop calls `sched_yield()` when it finds nothing to
+do: tile's main loop, `sh`'s line reader, the `anssos` runtime's
+`read_key()` and `write_all()` (a full pipe), and `play` while paused.
+Tested with `play` in one pane and scarf in another: the captured audio
+matches the reference decode with no dropouts.
+
+### What was wrong before
+
+The C version (`userland/tile.c`, M21) kept only scrollback text per
+pane and copied pane output to the console byte for byte. That caused
+three problems:
+
+- **Escape codes leaked.** A pane printing an escape sequence, even
+  `sh`'s `clear`, sent it to the real console, which wiped the whole
+  screen.
+- **The screen scrolled on every redraw.** A pane in the right column
+  filled its last row up to the bottom-right corner of the screen. The
+  console wraps as soon as a glyph lands in the last column, so writing
+  that cell scrolled everything up a line each time: the header and the
+  other panes drifted off the top. The anssos-tui backend never writes
+  that cell.
+- **Full-screen programs couldn't run in a pane.** They'd have drawn
+  across the whole screen at its real size, and `play`'s `poll_key()`
+  would have stolen tile's keys. `sh` refused to start `scarf` and
+  `play` when run as a pane. That guard is gone now that both work.
 
 ## Two real bugs, both found by testing, not review
 
@@ -124,7 +171,8 @@ was the right tool here rather than more guessing) that showed
 `write_refs` at 2, not the expected 1, right before the close that
 should have zeroed it. Fixed in `spawn_pane()`: each new pane's child
 explicitly closes every *earlier* pane's `in_w`/`out_r` before
-`use_as_stdio()`.
+`use_as_stdio()`. The Rust version keeps the same fix (`Pane::spawn()`'s
+`others`).
 
 ## Verification
 

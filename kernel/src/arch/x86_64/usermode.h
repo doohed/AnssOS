@@ -62,6 +62,12 @@ struct usertask {
      * not the program running on it. */
     struct k_termios termios;
 
+    /* Window size override set by TIOCSWINSZ (see drivers/tty.h);
+     * ws_col == 0 means "none -- report the physical console's size".
+     * Zeroed by elf_load(), kept across exec() (exec/process.c's
+     * process_exec()) and inherited by fork(), like termios. */
+    struct k_winsize winsize;
+
     /* Where arch_enter_usermode()/arch_resume_process() (usermode.S)
      * save this *specific* task's kernel-side resume context (callee-
      * saved GPRs + rsp) -- one slot per task, not a single shared one,

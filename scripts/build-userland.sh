@@ -76,9 +76,9 @@ RUST_OUT=rust/target/x86_64-unknown-none/release
 
 build_program play rust/play/c/mp3.c "$RUST_OUT/libplay.a"
 build_program scarf "$RUST_OUT/libscarf.a"
+build_program tile "$RUST_OUT/libtile.a"
 build_program pipetest pipetest.c
 build_program sh sh.c
-build_program tile tile.c
 
 # Not a userland ELF -- a synthesized WAV fixture for `play` (see the
 # script itself for why), dropped at the same src/exec/*.bin location

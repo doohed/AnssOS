@@ -34,12 +34,19 @@ int use_as_stdio(int stdin_fd, int stdout_fd);
  * playback stream (rate_hz must be 44100 or 48000, channels 1 or 2);
  * audio_write() sends S16LE PCM, blocking until the device has consumed
  * it; audio_close() stops/releases the stream. poll_key() is a
- * non-blocking keypress check (-1 if none ready) -- the piece that lets
- * a playback loop check for a control key without blocking on read(). */
+ * non-blocking keypress check (-1 if none ready; -2 if stdin is a pipe
+ * that has been closed, i.e. a tile pane shutting down) -- the piece
+ * that lets a playback loop check for a control key without blocking on
+ * read(). */
 int audio_open(unsigned int rate_hz, unsigned int channels);
 long audio_write(const void *buf, unsigned int len);
 int audio_close(void);
 int poll_key(void);
+
+/* Gives up the rest of this time slice to the next runnable process --
+ * what a loop polling an empty pipe (see poll_key()/read() above) does
+ * instead of spinning, so its siblings get the CPU. */
+int sched_yield(void);
 
 #define O_RDONLY 0
 #define O_WRONLY 1

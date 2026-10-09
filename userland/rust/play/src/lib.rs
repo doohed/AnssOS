@@ -29,6 +29,7 @@ use alloc::string::String;
 use core::ffi::{CStr, c_char, c_int};
 use core::fmt::Write;
 
+use anssos::KeyPoll;
 use anssos_tui::Term;
 
 use source::Source;
@@ -118,16 +119,19 @@ fn play_track(
     draw(terminal, &spectrum, paused, *volume, played);
 
     loop {
-        // While paused, spin here on the keyboard alone -- nothing is
-        // being fed to the device, so there's nothing else to do.
+        // While paused, wait here on the keyboard alone -- nothing is
+        // being fed to the device, so there's nothing else to do. Yield
+        // between polls rather than spin, so other processes (tile and
+        // its other panes, when this runs in one) keep the CPU.
         loop {
             let mut dirty = true;
             match anssos::poll_key() {
-                Some(b' ') => paused = !paused,
-                Some(b'q') => return Ok(Outcome::Quit),
-                Some(b'n') => return Ok(Outcome::Finished),
-                Some(b'+') => *volume = (*volume + 10).min(200),
-                Some(b'-') => *volume = (*volume - 10).max(0),
+                KeyPoll::Key(b' ') => paused = !paused,
+                // stdin closed: a tile pane shutting down -- quit as if 'q'.
+                KeyPoll::Key(b'q') | KeyPoll::Closed => return Ok(Outcome::Quit),
+                KeyPoll::Key(b'n') => return Ok(Outcome::Finished),
+                KeyPoll::Key(b'+') => *volume = (*volume + 10).min(200),
+                KeyPoll::Key(b'-') => *volume = (*volume - 10).max(0),
                 _ => dirty = false,
             }
             if dirty {
@@ -136,6 +140,7 @@ fn play_track(
             if !paused {
                 break;
             }
+            anssos::sched_yield();
         }
 
         let n = source.read_pcm(&mut chunk, frame_bytes);

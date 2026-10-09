@@ -19,9 +19,9 @@
  * So raw mode is set unconditionally at startup (own echo, own
  * backspace handling, like play and scarf (userland/rust/) already do) and
  * read_line() below reads one byte at a time in a loop that treats a 0
- * return as "no data yet, keep looping" -- a ring-3 spin, safely
- * preemptible, letting sibling pane processes actually run between
- * iterations when piped. Over the real console this never actually
+ * return as "no data yet" and calls sched_yield() -- handing the CPU
+ * straight to sibling pane processes (or a program playing audio)
+ * instead of spinning out its time slice. Over the real console this never actually
  * returns 0 (see sys_read_impl's raw-mode path) -- the loop shape is
  * identical either way, just blocks in one case and not the other. */
 
@@ -30,43 +30,6 @@
 #define LINE_MAX 256
 #define CMD_MAX 32
 #define PATH_MAX 256
-
-/* Set when tile.c spawned this sh as a pane (see its own comment on the
- * "--tile-pane" argv flag it passes). Guards against running a
- * full-screen ANSI program from inside a pane: TIOCGWINSZ has no
- * concept of panes and always reports the *physical* screen size, so a
- * program like scarf/play would draw with absolute coordinates across
- * the whole screen -- not just render oddly in its own pane, but
- * overwrite tile's header and every other pane too. There's no general
- * fix short of a real per-pane ANSI virtual terminal (out of scope --
- * see docs/tile.md); this is a guard rail, not a workaround. */
-static int g_in_pane = 0;
-
-/* Names known to draw full-screen ANSI UI (cursor addressing, ESC[K,
- * reverse video) rather than just scrolling text -- the actual thing
- * that's unsafe inside a pane, not "any program". A real fix would
- * detect this some other way; a short list is honest about being one. */
-static const char *UNSAFE_IN_PANE[] = {"scarf", "play"};
-#define UNSAFE_IN_PANE_COUNT ((int)(sizeof(UNSAFE_IN_PANE) / sizeof(UNSAFE_IN_PANE[0])))
-
-static int basename_is(const char *path, const char *name) {
-    const char *base = path;
-    for (const char *p = path; *p != '\0'; p++) {
-        if (*p == '/') {
-            base = p + 1;
-        }
-    }
-    return strcmp(base, name) == 0;
-}
-
-static int unsafe_in_pane(const char *path) {
-    for (int i = 0; i < UNSAFE_IN_PANE_COUNT; i++) {
-        if (basename_is(path, UNSAFE_IN_PANE[i])) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 static int resolve_program(const char *name, char *out, size_t out_size) {
     int has_slash = 0;
@@ -247,7 +210,8 @@ static int read_line(char *buf, size_t max_len) {
             return 0;
         }
         if (n == 0) {
-            continue; /* No byte yet (only happens when piped) -- keep spinning. */
+            sched_yield(); /* No byte yet (only happens when piped). */
+            continue;
         }
         if (c == '\n' || c == '\r') {
             putchar('\n');
@@ -269,13 +233,7 @@ static int read_line(char *buf, size_t max_len) {
     return 1;
 }
 
-int main(int main_argc, char **main_argv) {
-    for (int i = 1; i < main_argc; i++) {
-        if (strcmp(main_argv[i], "--tile-pane") == 0) {
-            g_in_pane = 1;
-        }
-    }
-
+int main(void) {
     struct termios orig, raw;
     int have_orig = tcgetattr(0, &orig) == 0;
     if (have_orig) {
@@ -334,12 +292,6 @@ int main(int main_argc, char **main_argv) {
             char path[PATH_MAX];
             if (!resolve_program(argv[0], path, sizeof(path))) {
                 printf("sh: %s: not found\n", argv[0]);
-            } else if (g_in_pane && unsafe_in_pane(path)) {
-                printf(
-                    "sh: %s: draws full-screen ANSI, which corrupts the whole "
-                    "display from inside a tile pane -- run it directly (not "
-                    "under tile) instead\n",
-                    argv[0]);
             } else {
                 run_program(path, argc, argv);
             }

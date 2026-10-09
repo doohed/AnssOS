@@ -601,6 +601,24 @@ virtio-gpu queue.
       with a mode chip, line numbers, and double-spaced lines on tall
       consoles (the 8x8 font has no leading). See [scarf.md](scarf.md).
 
+- [x] **M25 -- `tile` rewritten in Rust, with a terminal per pane.**
+      `userland/rust/tile/`: each pane's output goes through a terminal
+      emulator (`vt.rs`) that matches the console's ANSI subset, and the
+      panes are composed into one ratatui frame, so `scarf` and `play`
+      run inside panes. Kernel: `TIOCSWINSZ` gives a process (and
+      everything it runs) its own window size; `poll_key()` reads a piped
+      stdin, returning -2 once it's closed; a `sched_yield()` syscall
+      (24) lets loops polling empty pipes give up the CPU instead of
+      spinning; and a piped process's exit line goes to serial only.
+      `sh` loses its "no full-screen programs in a pane" guard and yields
+      while waiting for input. **The two bugs this fixed in the C
+      version:** pane output reached the console byte for byte (so
+      `clear` in a pane wiped the screen), and the right column's last
+      row wrote the screen's bottom-right cell, scrolling the whole
+      display up a line on every redraw. Verified with `play` and
+      `scarf` running side by side: the captured audio still matches
+      the reference with no dropouts. See [tile.md](tile.md).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
@@ -618,9 +636,6 @@ generally reusable yet — using FPU/SSE inside the kernel itself (M22
 gave userland per-process FPU state; kernel code stays `-mno-sse`), and
 `XSAVE`/AVX state beyond what `FXSAVE` covers; general `dup2()`
 and close-on-exec (M19-M21 use a narrower `use_as_stdio()` instead, and
-`tile.c`'s spawn logic closes inherited fds by hand — see
-[tile.md](tile.md#two-real-bugs-both-found-by-testing-not-review)); and
-a per-pane ANSI virtual terminal for `tile.c`, needed before `scarf`/
-`play` could run as panes (M21 only supports `sh`, which never emits
-cursor-addressing escapes). These are natural next milestones from
+tile's spawn logic closes inherited fds by hand — see
+[tile.md](tile.md#two-real-bugs-both-found-by-testing-not-review)). These are natural next milestones from
 here.

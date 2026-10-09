@@ -36,6 +36,15 @@ struct k_termios {
  * real terminals that don't know their pixel size do. */
 #define TIOCGWINSZ 0x5413
 
+/* TIOCSWINSZ sets the calling process's own window size (stored in its
+ * struct usertask, inherited by fork() and kept across exec()), which
+ * TIOCGWINSZ then reports instead of the physical console's. On Linux
+ * this lives on the pty; AnssOS has no ptys, so it lives on the process.
+ * It's how tile (userland/rust/tile/) tells each pane's programs how big
+ * their pane is -- set once in the pane's child before it execs `sh`,
+ * then inherited by everything that `sh` runs. */
+#define TIOCSWINSZ 0x5414
+
 struct k_winsize {
     uint16_t ws_row;
     uint16_t ws_col;

@@ -33,6 +33,7 @@ pub const SEEK_CUR: c_int = 1;
 pub const SEEK_END: c_int = 2;
 
 const TIOCGWINSZ: c_ulong = 0x5413;
+const TIOCSWINSZ: c_ulong = 0x5414;
 const ICANON: c_uint = 0x0002;
 const ECHO: c_uint = 0x0008;
 const VMIN: usize = 6;
@@ -78,7 +79,8 @@ unsafe extern "C" {
     #[link_name = "read"]
     fn c_read(fd: c_int, buf: *mut c_void, len: c_ulong) -> c_long;
     fn open(path: *const c_char, flags: c_int) -> c_int;
-    fn close(fd: c_int) -> c_int;
+    #[link_name = "close"]
+    fn c_close(fd: c_int) -> c_int;
     fn lseek(fd: c_int, offset: c_long, whence: c_int) -> c_long;
     #[link_name = "chdir"]
     fn c_chdir(path: *const c_char) -> c_int;
@@ -95,20 +97,58 @@ unsafe extern "C" {
     fn audio_close() -> c_int;
     #[link_name = "poll_key"]
     fn c_poll_key() -> c_int;
+    #[link_name = "sched_yield"]
+    fn c_sched_yield() -> c_int;
+    #[link_name = "pipe"]
+    fn c_pipe(fds: *mut c_int) -> c_int;
+    #[link_name = "fork"]
+    fn c_fork() -> c_int;
+    #[link_name = "execve"]
+    fn c_execve(path: *const c_char, argv: *const *const c_char) -> c_int;
+    #[link_name = "waitpid"]
+    fn c_waitpid(pid: c_int, status: *mut c_int) -> c_int;
+    #[link_name = "use_as_stdio"]
+    fn c_use_as_stdio(stdin_fd: c_int, stdout_fd: c_int) -> c_int;
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     #[link_name = "exit"]
     fn c_exit(code: c_int) -> !;
 }
 
+/// Writes all of `bytes` to `fd`. A pipe (stdout inside a tile pane)
+/// never blocks: when it's full the write returns 0, so this yields to
+/// let the reader drain it and tries again. Gives up on an error (-1,
+/// e.g. nobody left to read).
 pub fn write_all(fd: c_int, mut bytes: &[u8]) {
     while !bytes.is_empty() {
         let n = unsafe { write(fd, bytes.as_ptr().cast(), bytes.len() as c_ulong) };
-        if n <= 0 {
+        if n < 0 {
             return;
+        }
+        if n == 0 {
+            sched_yield();
+            continue;
         }
         bytes = &bytes[n as usize..];
     }
+}
+
+/// Hands the rest of this time slice to the next runnable process --
+/// for a loop that would otherwise spin on an empty pipe.
+pub fn sched_yield() {
+    unsafe { c_sched_yield() };
+}
+
+/// One non-blocking read from a pipe (or file) fd: `Some(n)` bytes, with
+/// `Some(0)` meaning "nothing yet"; `None` once the other end is closed
+/// and drained (or on error).
+pub fn read_fd(fd: c_int, buf: &mut [u8]) -> Option<usize> {
+    let n = unsafe { c_read(fd, buf.as_mut_ptr().cast(), buf.len() as c_ulong) };
+    if n < 0 { None } else { Some(n as usize) }
+}
+
+pub fn close(fd: c_int) {
+    unsafe { c_close(fd) };
 }
 
 pub fn exit(code: i32) -> ! {
@@ -117,16 +157,38 @@ pub fn exit(code: i32) -> ! {
 
 /// Blocking read of one byte from stdin -- in raw mode (RawMode), one
 /// keypress. None on EOF or error.
+///
+/// On the console this blocks in the kernel. Inside a tile pane stdin is
+/// a pipe, which never blocks -- an empty read returns 0 -- so this
+/// yields and retries until a key arrives. None only once stdin is
+/// closed for good.
 pub fn read_key() -> Option<u8> {
     let mut b = 0u8;
-    let n = unsafe { c_read(0, (&raw mut b).cast(), 1) };
-    if n == 1 { Some(b) } else { None }
+    loop {
+        match unsafe { c_read(0, (&raw mut b).cast(), 1) } {
+            1 => return Some(b),
+            0 => sched_yield(),
+            _ => return None,
+        }
+    }
 }
 
-/// Non-blocking keypress check: the key's byte, or None if none is ready.
-pub fn poll_key() -> Option<u8> {
-    let k = unsafe { c_poll_key() };
-    if k < 0 { None } else { Some(k as u8) }
+pub enum KeyPoll {
+    Key(u8),
+    /// Nothing pressed yet.
+    Empty,
+    /// stdin is a pipe that's been closed (a tile pane shutting down):
+    /// no key will ever come, so the program should quit.
+    Closed,
+}
+
+/// Non-blocking keypress check.
+pub fn poll_key() -> KeyPoll {
+    match unsafe { c_poll_key() } {
+        -2 => KeyPoll::Closed,
+        k if k < 0 => KeyPoll::Empty,
+        k => KeyPoll::Key(k as u8),
+    }
 }
 
 /// Terminal size in (columns, rows), 80x24 if the ioctl fails.
@@ -134,6 +196,52 @@ pub fn window_size() -> (u16, u16) {
     let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
     let ok = unsafe { ioctl(0, TIOCGWINSZ, (&raw mut ws).cast()) } == 0;
     if ok && ws.ws_col > 0 && ws.ws_row > 0 { (ws.ws_col, ws.ws_row) } else { (80, 24) }
+}
+
+/// Sets this process's window size -- what window_size() (TIOCGWINSZ)
+/// will report from now on, here and in every process forked or exec'd
+/// from it, instead of the physical console's. tile uses it to tell a
+/// pane's programs how big the pane is (kernel/src/drivers/tty.h).
+pub fn set_window_size(cols: u16, rows: u16) -> bool {
+    let mut ws = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
+    unsafe { ioctl(0, TIOCSWINSZ, (&raw mut ws).cast()) == 0 }
+}
+
+/// Both ends of a new pipe: (read end, write end). Pipes never block --
+/// see read_fd()/write_all().
+pub fn pipe() -> Option<(c_int, c_int)> {
+    let mut fds = [0 as c_int; 2];
+    if unsafe { c_pipe(fds.as_mut_ptr()) } == 0 { Some((fds[0], fds[1])) } else { None }
+}
+
+/// fork(): the child's pid in the parent, 0 in the child, None on
+/// failure. The child gets a copy of every open fd -- there's no
+/// close-on-exec, so it must close whatever it shouldn't keep.
+pub fn fork() -> Option<i32> {
+    let pid = unsafe { c_fork() };
+    if pid < 0 { None } else { Some(pid) }
+}
+
+/// Points this process's stdin/stdout at the given pipe fds (freeing
+/// those two fd numbers) -- AnssOS's narrow stand-in for dup2(), meant
+/// for a freshly forked child right before exec().
+pub fn use_as_stdio(stdin_fd: c_int, stdout_fd: c_int) -> bool {
+    unsafe { c_use_as_stdio(stdin_fd, stdout_fd) == 0 }
+}
+
+/// Replaces this process with the program at `path`. Only returns if
+/// that failed.
+pub fn exec(path: &CStr, args: &[&CStr]) {
+    let mut argv: Vec<*const c_char> = args.iter().map(|a| a.as_ptr()).collect();
+    argv.push(core::ptr::null());
+    unsafe { c_execve(path.as_ptr(), argv.as_ptr()) };
+}
+
+/// Waits for child `pid` to exit; its exit status.
+pub fn waitpid(pid: i32) -> i32 {
+    let mut status: c_int = -1;
+    unsafe { c_waitpid(pid, &mut status) };
+    status
 }
 
 /// Puts the console in raw mode (no line buffering, no echo); restores
@@ -261,7 +369,7 @@ impl File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        unsafe { close(self.0) };
+        unsafe { c_close(self.0) };
     }
 }
 

@@ -71,7 +71,10 @@ pub extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
         });
         match anssos::read_key() {
             Some(key) => ed.key(key),
-            None => continue,
+            // stdin closed for good (a tile pane shutting down): there's
+            // no way to ask about unsaved changes, so quit, like vim does
+            // on EOF.
+            None => break,
         }
     }
 

@@ -22,13 +22,14 @@ termios` has Linux's layout, and so on.
 | 3 | `close` | `close(fd)` | |
 | 8 | `lseek` | `lseek(fd, offset, whence)` | `SEEK_END` rejected on directory fds |
 | 12 | `brk` | `brk(new_end)` | grows a page at a time, capped at 4 MiB, never shrinks |
-| 16 | `ioctl` | `ioctl(fd, req, argp)` | `TCGETS`, `TCSETS`, `TIOCGWINSZ` only |
+| 16 | `ioctl` | `ioctl(fd, req, argp)` | `TCGETS`, `TCSETS`, `TIOCGWINSZ`, `TIOCSWINSZ` only |
 | 39 | `getpid` | `getpid()` | |
 | 57 | `fork` | `fork()` | full page-by-page address-space copy, no copy-on-write |
 | 59 | `execve` | `execve(path, argv)` | replaces the image in place; same pid, open files, cwd, termios |
 | 60 | `exit` | `exit(status)` | |
 | 61 | `wait4` | `waitpid(pid, status)` | simplified: no options, no `WNOHANG` |
 | 22 | `pipe` | `pipe(pipefd[2])` | `pipefd[0]`=read end, `pipefd[1]`=write end; both never block (see below) |
+| 24 | `sched_yield` | `sched_yield()` | gives up the rest of the time slice; what a loop polling an empty pipe calls instead of spinning |
 | 79 | `getcwd` | `getcwd(buf, size)` | absolute path of the task's cwd |
 | 80 | `chdir` | `chdir(path)` | also the only reliable "is this a directory?" test |
 | 83 | `mkdir` | `mkdir(path)` | |
@@ -50,7 +51,7 @@ not-a-real-syscall:
 | 900 | `audio_open` | `audio_open(rate_hz, channels)` | `rate_hz` ∈ {44100, 48000}, `channels` ∈ {1, 2} only |
 | 901 | `audio_write` | `audio_write(buf, len)` | S16LE PCM; blocks until the device has consumed it |
 | 902 | `audio_close` | `audio_close()` | |
-| 903 | `poll_key` | `poll_key()` | non-blocking; -1 if no key is ready |
+| 903 | `poll_key` | `poll_key()` | non-blocking; -1 if no key is ready. With a piped stdin (a tile pane) it reads that pipe instead of the keyboard, and returns -2 once the pipe is closed |
 | 904 | `use_as_stdio` | `use_as_stdio(stdin_fd, stdout_fd)` | points this task's fd 0/1 at the pipes behind two existing fds |
 
 `poll_key` is what makes an interactive audio player possible without
@@ -61,7 +62,7 @@ loop can check for a control key without ever blocking the loop that
 feeds the audio device — see [play.md](play.md).
 
 `use_as_stdio` is the redirection half of running an independent
-process in a `tile.c` pane (M19-M21, see [tile.md](tile.md)): real Unix
+process in a tile pane (M19-M21, see [tile.md](tile.md)): real Unix
 composes this from two `dup2()` calls, but this project deliberately
 doesn't implement general `dup2()` — the only real need is "make my
 stdio these two pipes," called by a freshly `fork()`'d child right
@@ -98,7 +99,7 @@ entries referencing the same pipe, and closing one's copy must not
 silently close the other's. `process_fork()` bumps the relevant
 refcount for every pipe-backed entry it copies to keep this correct.
 There's no `O_CLOEXEC`/close-on-exec either — a child that inherits fds
-it doesn't know about (e.g. `tile.c` spawning a *second* pane while the
+it doesn't know about (e.g. tile spawning a *second* pane while the
 first one's pipes are still open) must close them explicitly, or it
 silently holds a phantom reference that keeps the first pipe from ever
 reaching zero refs. Found exactly this way, as a real hang.
@@ -148,11 +149,27 @@ backspace handling, and returns as soon as one byte is available
 the real terminal may be a different size -- it is the only size the
 kernel knows.
 
+**Unless the process has its own window size.** `TIOCSWINSZ` stores a
+size in the calling process's `struct usertask`. `TIOCGWINSZ` then
+reports that size instead, and so does every process forked or exec'd
+from it, because the field is inherited like `termios`. On Linux the
+window size lives on the pty; AnssOS has no ptys, so it lives on the
+process. This is how [tile](tile.md) tells a pane's programs the pane's
+size: the pane's child sets it once before exec'ing `sh`, and
+everything `sh` runs inherits it.
+
+**Processes with piped stdio don't print to the console.** The kernel's
+"process N exited with code X" line goes to the serial log only for a
+process whose stdout is a pipe, because someone else (a tile pane) is
+drawing its output and a line printed straight onto the framebuffer
+would land on top of it.
+
 ## Not implemented
 
 No `mmap`, no signals, no `poll`/`select`, no general `dup`/`dup2` (M19
 added `pipe()` and the narrower `use_as_stdio()` instead -- see above),
-no pty, no `O_NONBLOCK` on anything but pipes (which are unconditionally
+no pty (a per-process window size stands in for the one thing tile
+needed from one), no `O_NONBLOCK` on anything but pipes (which are unconditionally
 non-blocking), no `stat`/`fstat`, no `unlink`/`rename`, no `envp`, no TLS
 or `arch_prctl`. A real terminal multiplexer and a userland shell turned
 out *not* to need most of that list after all -- see
