@@ -18,6 +18,7 @@ targets UEFI + long mode only.
 | [docs/syscalls.md](docs/syscalls.md) | the syscall table, the initial stack layout, terminal handling |
 | [docs/scarf.md](docs/scarf.md) | the text editor: keys, design notes, performance |
 | [docs/roadmap.md](docs/roadmap.md) | milestone history -- what arrived when, and what went wrong building it |
+| [docs/real-hardware.md](docs/real-hardware.md) | the plan for booting on a real PC: framebuffer, keyboard, disk, audio drivers |
 
 ## Quick start
 
