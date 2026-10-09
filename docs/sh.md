@@ -140,7 +140,7 @@ inside a directory that no longer exists.
 ## How it's built
 
 A `no_std` Rust staticlib in the `userland/rust/` workspace (see
-[play.md](play.md#design-notes) for how those are built and linked),
+[rust.md](rust.md) for how those are built and linked),
 using the `anssos` runtime. It draws with plain escape codes rather than
 ratatui, because a shell scrolls like any other terminal program rather
 than owning the screen.

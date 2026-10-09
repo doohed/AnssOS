@@ -25,15 +25,20 @@ what went wrong building it; this is the shape of the result.
   physical MMIO range into a dedicated slice of virtual address space. No
   unmapping, no per-process address spaces, no demand paging — those stay
   future work.
-- **Drivers:** virtio-only. The kernel enumerates PCI itself and speaks the
-  virtio 1.x ("modern") PCI transport directly — no legacy virtio, no
-  non-virtio device drivers. `drivers/virtio/virtio_snd.c` (M17) is the
+- **Drivers:** virtio, plus what a real PC needs (in progress, see
+  [real-hardware.md](real-hardware.md)). The kernel enumerates PCI itself
+  and speaks the virtio 1.x ("modern") PCI transport directly — no legacy
+  virtio. The display is the one exception so far: with no virtio-gpu,
+  `drivers/display.c` uses the firmware's GOP framebuffer that Limine
+  hands over. `drivers/virtio/virtio_snd.c` (M17) is the
   newest: a virtio-sound driver wiring up just the control and tx
   virtqueues (not event/rx — playback only) for PCM output, see
   [play.md](play.md).
 - **Debugging:** all kernel logging goes out over the COM1 serial port
   (`kprintf`), independent of the display, so anything after boot is
   debuggable via `-serial stdio` even before the framebuffer driver works.
+  `serial_init()` checks the UART is really there (a loopback self-test)
+  and goes quiet if not, as on many real PCs.
 
 ## Processes and userspace
 
@@ -76,6 +81,11 @@ what went wrong building it; this is the shape of the result.
   `dup2()`) are what let tile (`userland/rust/tile/`) run independent `sh`
   processes in tiled panes -- see [syscalls.md](syscalls.md#pipes-m19)
   and [tile.md](tile.md).
+- **Userland:** every program links `crt0.S` and a small hand-written
+  C libc (`userland/libc.h`) over `int 0x80`. The self-test payloads are
+  C; the interactive programs (`sh`, `play`, `scarf`, `tile`) are
+  `no_std` Rust in one Cargo workspace, `userland/rust/`, linked the same
+  way -- see [rust.md](rust.md).
 
 ## Syscalls
 
@@ -110,8 +120,12 @@ Two independent output paths, both fed by `kprintf`:
   terminal -- `run-qemu.sh` passes `-serial stdio`, so the host
   terminal *is* the console.
 - **Framebuffer.** `console/fbconsole.c` draws an 8x8 bitmap font over
-  the virtio-gpu framebuffer, and understands a subset of ANSI/CSI
-  escape sequences: cursor addressing, erase, and SGR for the 16 ANSI
+  whatever `drivers/display.c` found -- virtio-gpu, or the firmware's GOP
+  framebuffer, drawn in a RAM copy and copied to the screen a changed
+  rectangle at a time (reading video memory back is slow). Each font
+  pixel becomes a 2x2 block from 1600 pixels wide and 3x3 from 3200, so
+  text stays readable on a 1080p or 4K monitor. It understands a subset
+  of ANSI/CSI escape sequences: cursor addressing, erase, and SGR for the 16 ANSI
   colors (foreground and background, from its own palette), bold (drawn
   as the bright color), dim (blended toward the background) and reverse
   video -- enough for full-screen programs like [scarf](scarf.md) and
@@ -127,13 +141,14 @@ Two independent output paths, both fed by `kprintf`:
   draw it there and rerun the script. tile's per-pane terminal and the
   ratatui backend (`anssos_tui::console_has()`) pass the same set
   through. A
-  redraw costs one `virtio_gpu_flush()`, which currently transfers the
+  redraw costs one flush; on virtio-gpu that currently transfers the
   *entire* framebuffer; see [scarf.md](scarf.md#performance).
 
-Input is equally dual: `shell.c`'s `read_line()` polls
-`virtio_input_poll_char()` (the virtio keyboard, which needs a
-graphical window with focus) and `serial_poll_char()` on every
-iteration, whichever has a byte ready. Keys with no single byte --
+Input is equally dual: `shell.c`'s `read_line()` and the read/poll
+syscalls call `input_poll_char()` (`drivers/input.c`), which polls the
+virtio keyboard (needs a graphical window with focus) and COM1 on
+every iteration, whichever has a byte ready. Real-hardware keyboard
+drivers will join it there. Keys with no single byte --
 arrows, Home/End, Delete, Page Up/Down -- come out of the virtio
 keyboard as the escape sequences a VT100-style terminal sends (`ESC [ A`
 for Up, `ESC [ 3 ~` for Delete, ...), so a program sees the same bytes

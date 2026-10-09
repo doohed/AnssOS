@@ -19,8 +19,8 @@ FROM debian:trixie-20260803-slim
 #                         (gen-test-tone.py synthesizes a WAV fixture --
 #                         real binary struct packing and float math, not
 #                         a fit for bash -- see docs/play.md), plus cargo
-#                         with the x86_64-unknown-none target for play
-#                         (Rust + ratatui, userland/rust/) -- installed
+#                         with the x86_64-unknown-none target for sh,
+#                         play, scarf and tile (Rust, userland/rust/) -- installed
 #                         via rustup below, not apt: Debian's rustc ships
 #                         no prebuilt core/alloc for that target.
 #   run-qemu.sh        -> qemu-system-x86_64, qemu-img, OVMF firmware
@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust for userland/rust/ (play, scarf): a minimal stable toolchain plus the bare-metal
+# Rust for userland/rust/ (sh, play, scarf, tile): a minimal stable toolchain plus the bare-metal
 # x86_64 target. On an arm64 host this is still a native toolchain --
 # x86_64-unknown-none is a cross target, like clang's --target.
 ENV RUSTUP_HOME=/usr/local/rustup \

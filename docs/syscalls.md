@@ -94,7 +94,8 @@ code, never ring-0, so a busy-spin inside a syscall handler waiting on
 *another process* to produce data would never yield the CPU to that
 process — a real deadlock, not a style choice. A program that wants
 blocking-looking behavior over a pipe loops in its own ring-3 code
-instead (see `userland/sh.c`'s `read_line()`), the same shape
+instead (see `anssos::read_key()` in `userland/rust/anssos/`, which
+yields with `sched_yield()` between empty reads), the same shape
 `poll_key()`-based loops already use elsewhere.
 
 References are counted, not tracked as a single "open" boolean — `fork()`
@@ -149,7 +150,7 @@ backspace handling, and returns as soon as one byte is available
 (`VMIN=1`, `VTIME=0` -- the one concrete combination implemented).
 
 `TIOCGWINSZ` answers from the framebuffer console's glyph grid, or
-80x24 on a boot with no virtio-gpu. Note that it reports the
+80x24 on a boot with no screen at all. Note that it reports the
 *framebuffer* geometry even when you are on the serial console, where
 the real terminal may be a different size -- it is the only size the
 kernel knows.

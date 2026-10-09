@@ -1,9 +1,9 @@
 //! ratatui on AnssOS: the console backend (backend.rs) plus the setup,
 //! teardown and one style every full-screen program here shares.
 //!
-//! The console (kernel/src/console/fbconsole.c) is ASCII-only, with the
-//! 16 ANSI colors, bold, dim and reverse video -- see backend.rs for what
-//! that means for drawing. The one trick that makes it look like more
+//! The console (kernel/src/console/fbconsole.c) draws ASCII plus a few
+//! extra glyphs (console_has()), with the 16 ANSI colors, bold, dim and
+//! reverse video -- see backend.rs for what that means for drawing. The one trick that makes it look like more
 //! than a terminal dump: a reverse-video *space* is a solid cell
 //! (`solid()`), so bars, title strips and fills render as solid blocks.
 

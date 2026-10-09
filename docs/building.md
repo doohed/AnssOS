@@ -10,10 +10,10 @@ binary struct packing and float math bash doesn't have):
 sudo apt-get install -y nasm qemu-system-x86 qemu-utils ovmf xorriso mtools python3
 ```
 
-`play` is Rust (the `userland/rust/` workspace, see
-[play.md](play.md#design-notes)), so the build also needs
-a Rust toolchain from [rustup](https://rustup.rs) plus the bare-metal
-x86_64 target. The first build downloads its crates (ratatui and its
+The interactive programs -- `sh`, `play`, `scarf` and `tile` -- are Rust
+(the `userland/rust/` workspace, see [rust.md](rust.md)), so the build
+also needs a Rust toolchain from [rustup](https://rustup.rs) plus the
+bare-metal x86_64 target. The first build downloads its crates (ratatui and its
 dependencies) from crates.io:
 
 ```sh
@@ -24,9 +24,15 @@ Building and running are two separate scripts (`make`/`make run` are thin
 wrappers around them, if you'd rather not call them directly):
 
 ```sh
-./scripts/build-iso.sh   # build the userland test payloads, kernel/bin/kernel, and assemble AnssOS.iso
+./scripts/build-iso.sh   # build userland (C and Rust), kernel/bin/kernel, and assemble AnssOS.iso
 ./scripts/run-qemu.sh    # boot the already-built ISO (UEFI/OVMF, virtio-gpu-pci, serial on stdout)
 ```
+
+`./scripts/run-qemu.sh --pc` boots it the way a real PC looks instead:
+no virtio devices, a plain VGA card whose UEFI GOP framebuffer is the
+only display, 4 GiB of RAM and 6 CPUs. It's where real-hardware drivers
+get tested first (see [real-hardware.md](real-hardware.md)); until there
+is one for the keyboard, type into the serial console.
 
 `run-qemu.sh` does **not** build anything itself — it errors out if
 `AnssOS.iso` doesn't exist yet, telling you to run `build-iso.sh` first.
@@ -77,6 +83,11 @@ installs on arm64 unchanged and lands in `/usr/share/OVMF/` as the split
 `OVMF_CODE_4M.fd`/`OVMF_VARS_4M.fd` pair that `run-qemu.sh`'s existing
 auto-detection already looks for first.
 
+The image also carries a Rust toolchain for `userland/rust/`, installed
+with rustup rather than apt: Debian's `rustc` ships no prebuilt
+`core`/`alloc` for `x86_64-unknown-none`. Like clang, it's a native
+arm64 toolchain targeting x86_64, so nothing is emulated there either.
+
 The container runs as root, so files it creates in the bind mount are
 root-owned. On Docker Desktop for Mac that's invisible — the VirtioFS
 mount maps ownership back to you — but on a Linux host you'll want to
@@ -99,20 +110,18 @@ sudo apt-get install -y clang-format
 ## Running under UTM
 
 UTM is a GUI wrapper around the same QEMU, but its defaults differ from
-what `run-qemu.sh` passes, and AnssOS is virtio-only by design -- it has
-no PS/2 or USB HID driver, so UTM's default input devices are invisible
-to it. In VM Settings:
+what `run-qemu.sh` passes, and AnssOS has no PS/2 or USB HID driver
+yet, so UTM's default input devices are invisible to it. In VM Settings:
 
 - **System -> Machine:** `q35`, with **UEFI Boot** enabled. There is no
   legacy BIOS path.
-- **Devices -> Display:** `virtio-gpu-pci` specifically. `main.c` looks
-  for PCI class 3.80; `virtio-vga` presents as a VGA-class device and
-  will not be found, leaving you in the `Skipping M4/M5` branch.
+- **Devices -> Display:** `virtio-gpu-pci`. Anything else that leaves a
+  UEFI GOP framebuffer (`virtio-vga`, plain VGA) also works, through the
+  firmware-framebuffer fallback, but redraws are slower.
 - **QEMU -> Arguments:** add `-device` and `virtio-keyboard-pci` as two
   separate entries (each row is one argv token). Without a virtio
-  keyboard, `virtio_input_init()` fails and `main.c` skips the shell
-  entirely -- the kernel halts after printing why.
-- **Devices -> New -> Serial.** Not optional in practice: with no UART
-  at COM1, reads of the Line Status Register return `0xFF`, whose
-  bit 0 reads as "data ready" forever, so the shell receives an endless
-  stream of phantom `0xFF` bytes.
+  keyboard the shell still starts, but only the serial console can type
+  into it.
+- **Devices -> New -> Serial.** Needed for the serial console. Without
+  one, `serial_init()` notices there's no UART at COM1 and the kernel
+  just doesn't use it.

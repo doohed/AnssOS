@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Builds the tiny hand-rolled userland test payloads (hello, crash,
-# malloctest, filetest, dirtest, forktest, forkchild, preempttest) used
-# to prove the ring-3 pipeline end-to-end, and
-# drops their built ELF binaries where kernel/src/exec/userland_blobs.S
-# expects to find them (via .incbin) so they get embedded directly into
-# the kernel image -- see main.c's self-test wiring for how they land on
-# the VFS at boot.
+# Builds every ring-3 program: the tiny hand-rolled C test payloads
+# (hello, crash, malloctest, filetest, dirtest, forktest, forkchild,
+# preempttest, ...) used to prove the ring-3 pipeline end-to-end, and the
+# Rust programs in userland/rust/ (sh, play, scarf, tile -- see
+# docs/rust.md). Drops their built ELF binaries where
+# kernel/src/exec/userland_blobs.S expects to find them (via .incbin) so
+# they get embedded directly into the kernel image -- see main.c for how
+# they land on the VFS (/bin) at boot.
 #
 # This is a genuinely separate build (its own toolchain flags, its own
 # linker script) from the kernel itself -- these are ring-3 userland
