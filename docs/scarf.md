@@ -19,30 +19,30 @@ shell's cwd.
 
 ## Screen
 
-A file sidebar on the left and the file on the right, each with a
-title; a status bar and the message/command line along the bottom. It
-uses the same visual language as
-[play](play.md#screen): monochrome, reverse video only, where a
-reverse-video space is a solid cell. So these are all solid:
+A file sidebar on the left and the file on the right, split by a thin
+grey line; a status bar and the message/command line along the bottom.
+It uses the same palette and shapes as [sh](sh.md)'s prompt:
 
-- the focused pane's title;
-- the divider (a solid column, because `font8x8_basic` draws `|` as a
-  broken, dashed bar);
-- the status bar, with the mode chip (`NORMAL`, `INSERT`, `COMMAND`,
-  `FILES`) cut out of it in normal video;
-- the cursor;
-- the cursor line's number.
+- each pane's title is a round-ended tab, followed by a grey rule;
+- the status bar is a dark band with the mode chip (`NORMAL`, `INSERT`,
+  `COMMAND`, `FILES`) on the left, arrow-joined to the file name, and
+  the cursor position in a chip on the right;
+- line numbers are grey, and the cursor line's is bright;
+- in the sidebar, directories are bold blue and dotfiles grey;
+- an unsaved file shows a `●` in its tab and in the status bar.
 
-Focus shows twice: the focused pane's title goes solid, and the sidebar's
-selection is a full solid band only while the sidebar has focus. When the
-editor has focus, the sidebar marks its selection with `>` instead.
+**Everything that marks focus is in the mode's color**: blue in normal
+mode, green in insert mode, yellow on the command line, magenta in the
+sidebar. That covers the focused pane's tab, both status chips, the
+cursor, and the accent bar on the sidebar's selection. While the sidebar
+has focus, its selection is a grey band with that accent bar down its
+left edge; otherwise the selection is marked with `❯`. Text on those
+colors is black and never bold, because the console draws bold as the
+bright color, which would turn black into grey.
 
-The 8×8 font has no leading, so adjacent text lines touch. On a console
-of 50 rows or more (every resolution `run-qemu.sh` offers), text and
-sidebar lines are double-spaced. The sidebar selection then also takes
-the blank rows above and below its entry, so its text sits centred in a
-3-row band. A smaller console (the 80×24 fallback without a screen)
-stays single-spaced rather than halving what fits.
+The tabs, arrows and lines are extra glyphs in the console's font (see
+[architecture.md](architecture.md#console)). tile's per-pane terminal
+passes them and the colors through, so scarf looks the same in a pane.
 
 Bytes outside printable ASCII show as `?`, and a tab shows as one space;
 the console can't display anything else.
@@ -109,12 +109,12 @@ It shares the `anssos` runtime (libc FFI: files, `chdir`/`getcwd`,
 directory listing, raw mode) and `anssos-tui` (the ratatui console
 backend) with `play` and `tile`.
 
-**The cursor is drawn as a solid cell** rather than the terminal's own
+**The cursor is drawn as a colored cell** rather than the terminal's own
 cursor, because that renders identically on the framebuffer console and
 over serial. `anssos_tui::init()` hides the real cursor, and `restore()`
 brings back normal video, a cleared screen and a visible cursor on exit.
-Otherwise the shell prompt would inherit reverse video and an invisible
-cursor.
+Otherwise the shell prompt would inherit scarf's colors and an
+invisible cursor.
 
 **Ratatui does the redraw bookkeeping.** The C version positioned every
 line explicitly, cleared with `ESC[K`, and repainted the sidebar only when
