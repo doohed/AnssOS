@@ -30,8 +30,9 @@ wrappers around them, if you'd rather not call them directly):
 
 `./scripts/run-qemu.sh --pc` boots it the way a real PC looks instead:
 no virtio devices, a plain VGA card whose UEFI GOP framebuffer is the
-only display, 4 GiB of RAM, 6 CPUs, and a USB keyboard on an xHCI
-controller (type into the QEMU window, or the serial console). It's
+only display, 4 GiB of RAM, 6 CPUs, a USB keyboard on an xHCI
+controller (type into the QEMU window, or the serial console), and
+Intel HD Audio with a line-out codec (`play testtone.wav`). It's
 where real-hardware drivers get tested first (see
 [real-hardware.md](real-hardware.md)).
 

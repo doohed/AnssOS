@@ -6,6 +6,7 @@
 #include "boot/requests.h"
 #include "console/fbconsole.h"
 #include "console/splash.h"
+#include "drivers/audio.h"
 #include "drivers/display.h"
 #include "drivers/pci.h"
 #include "drivers/timer.h"
@@ -14,7 +15,6 @@
 #include "drivers/serial.h"
 #include "drivers/virtio/virtio_blk.h"
 #include "drivers/virtio/virtio_input.h"
-#include "drivers/virtio/virtio_snd.h"
 #include "exec/process.h"
 #include "exec/userland_blobs.h"
 #include "fs/blkfs.h"
@@ -208,12 +208,10 @@ void kmain(void) {
             "Boot QEMU with -device virtio-blk-pci for persistence.\n");
     }
 
-    if (virtio_snd_init() == 0) {
-        kprintf("M17 complete: virtio-sound ready.\n");
+    if (audio_init() == 0) {
+        kprintf("M17 complete: %s ready.\n", audio_name());
     } else {
-        kprintf(
-            "Skipping M17 (no virtio-sound device) -- audio playback unavailable. Boot "
-            "QEMU with -device virtio-sound-pci for `play`.\n");
+        kprintf("No sound device -- audio playback unavailable.\n");
     }
 
     /* M10/M11 self-test fixtures: the hand-rolled userland test

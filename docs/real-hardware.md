@@ -13,9 +13,9 @@ driver:
 | Need | Today | On the real PC |
 |---|---|---|
 | Screen | virtio-gpu, or the GOP framebuffer (`drivers/display.c`) | **Done:** the RX 5600 XT's GOP framebuffer, handed over by Limine |
-| Keyboard | virtio-input, USB (`drivers/usb/`), or COM1 | USB via xHCI (the board has no PS/2 port) -- **works in QEMU, untested on the PC** |
+| Keyboard | virtio-input, USB (`drivers/usb/`), or COM1 | **Done:** USB via xHCI (the board has no PS/2 port) |
 | Disk | virtio-blk, blkfs from sector 0 | NVMe (or AHCI for SATA), inside a dedicated GPT partition |
-| Audio | virtio-sound | Intel HD Audio controller + Realtek codec, and the GPU's HDMI/DP audio |
+| Audio | virtio-sound, or HD Audio (`drivers/hda.c`) | The board's HD Audio analog outputs -- **works in QEMU, untested on the PC**; the GPU's HDMI/DP audio needs a GPU driver |
 | Timer | LAPIC timer calibrated against the ACPI PM timer; PIT through the 8259 as a fallback (`drivers/timer.c`) | The PIT path hung the first real boot; the LAPIC timer needs no routing |
 | Other interrupts | 8259 PIC through LAPIC LINT0 (unused: every driver polls) | IO-APIC or MSI-X once drivers use interrupts |
 | Debug log | COM1 (`-serial stdio`), skipped when no UART answers | Only if the board has a COM header; otherwise the screen |
@@ -161,8 +161,9 @@ invisible.
 
 ## Phase 3 -- Keyboard
 
-**Status: 3b done in QEMU** (`run-qemu.sh --pc` now has a `qemu-xhci`
-controller with a `usb-kbd`), waiting on the real PC. 3a was skipped:
+**Status: 3b done, and typing works on the real PC** (first boot with
+it). Built against `run-qemu.sh --pc`, which now has a `qemu-xhci`
+controller with a `usb-kbd`. 3a was skipped:
 the board has no PS/2 port. Verified by typing through QMP: plain and
 shifted characters, arrows and Delete through `sh`'s line editor,
 Backspace, Ctrl-U, key repeat (19 characters from a 1.2 s hold), unplug
@@ -249,6 +250,23 @@ behave correctly rather than by luck:
   the scheduler and every shared kernel structure assume one CPU.
 
 ## Phase 6 -- Audio
+
+**Status: done in QEMU** (`run-qemu.sh --pc` now has `intel-hda` +
+`hda-output`), waiting on the real PC. `play testtone.wav` captured
+through QEMU's wav backend matches the source sample for sample on both
+channels (mono is played on both), twice in a row, in 2.0 s for the
+2-second tone -- so the pacing is real time. Analog outputs only: the
+RX 5600 XT's HDMI/DP audio controller is found but skipped, since the
+GPU's display engine has to be told to carry audio. On the PC the boot
+log lists each controller, the codec (`hda: codec N: vendor:device`),
+and each routed output (`hda: line out (pin 0x14) <- DAC 0x2`).
+
+Two things learned building it: the controller only delivers RINTCNT
+responses until the driver acknowledges them in RIRBSTS (an interrupt
+handler's job elsewhere), and the response flag behind that only rises
+with the RIRB interrupt enable set -- so it's set, while the global
+interrupt enable stays off. A codec that stops answering is given up on
+after one timeout, so broken audio hardware can't stall the boot.
 
 An Intel HD Audio driver behind an `audio_open/write/close` interface
 that `play`'s syscalls already match (S16LE, 44.1/48 kHz, stereo):

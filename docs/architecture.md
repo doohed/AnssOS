@@ -28,12 +28,12 @@ what went wrong building it; this is the shape of the result.
 - **Drivers:** virtio, plus what a real PC needs (in progress, see
   [real-hardware.md](real-hardware.md)). The kernel enumerates PCI itself
   and speaks the virtio 1.x ("modern") PCI transport directly — no legacy
-  virtio. The display is the one exception so far: with no virtio-gpu,
-  `drivers/display.c` uses the firmware's GOP framebuffer that Limine
-  hands over. `drivers/virtio/virtio_snd.c` (M17) is the
-  newest: a virtio-sound driver wiring up just the control and tx
-  virtqueues (not event/rx — playback only) for PCM output, see
-  [play.md](play.md).
+  virtio. Each kind of device has a real-hardware path next to its
+  virtio one: the firmware's GOP framebuffer when there's no virtio-gpu
+  (`drivers/display.c`), USB keyboards on xHCI (`drivers/usb/`), and
+  Intel HD Audio (`drivers/hda.c`) behind the same `audio_*` interface
+  as virtio-sound (`drivers/audio.c`; playback only, see
+  [play.md](play.md)). Everything is polled -- no device interrupts.
 - **Debugging:** all kernel logging goes out over the COM1 serial port
   (`kprintf`), independent of the display, so anything after boot is
   debuggable via `-serial stdio` even before the framebuffer driver works.

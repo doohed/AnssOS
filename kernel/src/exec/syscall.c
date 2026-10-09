@@ -2,12 +2,12 @@
 #include "../arch/x86_64/idt.h"
 #include "../arch/x86_64/usermode.h"
 #include "../console/fbconsole.h"
+#include "../drivers/audio.h"
 #include "../drivers/serial.h"
 #include "../drivers/timer.h"
 #include "../drivers/tty.h"
 #include "../drivers/virtio/virtio_blk.h"
 #include "../drivers/input.h"
-#include "../drivers/virtio/virtio_snd.h"
 #include "../fs/blkfs.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
@@ -712,15 +712,15 @@ static int64_t sys_use_as_stdio_impl(int stdin_fd, int stdout_fd) {
 }
 
 static int64_t sys_audio_open_impl(uint32_t rate_hz, uint32_t channels) {
-    return virtio_snd_open(rate_hz, (uint8_t)channels);
+    return audio_open(rate_hz, (uint8_t)channels);
 }
 
 static int64_t sys_audio_write_impl(const void *buf, uint32_t len) {
-    return virtio_snd_write(buf, len);
+    return audio_write(buf, len);
 }
 
 static int64_t sys_audio_close_impl(void) {
-    return virtio_snd_close();
+    return audio_close();
 }
 
 /* Non-blocking single-byte keypress poll -- the same input_poll_char()
