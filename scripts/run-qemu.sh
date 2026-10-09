@@ -150,11 +150,26 @@ fi
 XRES="${RES%x*}"
 YRES="${RES#*x}"
 
+# Display backend -- on macOS, Cocoa's window is locked to the guest's
+# framebuffer size unless zoom-to-fit is on; with it, the window can be
+# resized freely and the guest image is scaled to fill it (the guest's
+# own resolution stays $RES -- it's scaling, not a mode change).
+# zoom-interpolation smooths that scaling instead of nearest-neighbour.
+# Elsewhere QEMU's default display is left alone. Set QEMU_DISPLAY to
+# override, e.g. QEMU_DISPLAY="cocoa,zoom-to-fit=off".
+display_args=()
+if [ -n "${QEMU_DISPLAY:-}" ]; then
+    display_args=(-display "$QEMU_DISPLAY")
+elif [ "$(uname -s)" = "Darwin" ]; then
+    display_args=(-display cocoa,zoom-to-fit=on,zoom-interpolation=on)
+fi
+
 exec qemu-system-x86_64 \
     -M q35 \
     -m 512M \
     -no-shutdown \
     -vga none \
+    ${display_args[@]+"${display_args[@]}"} \
     "${fw_args[@]}" \
     -cdrom "$ISO" \
     -device virtio-gpu-pci,xres="$XRES",yres="$YRES" \
