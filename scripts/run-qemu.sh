@@ -113,7 +113,7 @@ fi
 # Display resolution -- virtio-gpu's own xres/yres properties, which set
 # the mode the device reports to the guest at boot (with --pc, the VGA
 # card's, which it reports as its monitor's preferred mode over EDID). Everything downstream
-# follows from it with no further configuration: console/fbconsole.c
+# follows from it with no further configuration: console/fbconsole.rs
 # derives its text grid as width/8 x height/8, and TIOCGWINSZ hands that
 # to full-screen programs (see docs/scarf.md).
 #

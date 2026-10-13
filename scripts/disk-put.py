@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Writes a host file directly onto an AnssOS disk image (blkfs format),
-without going through a kernel rebuild or `.incbin` embedding at all.
+without going through a kernel rebuild or embedding it in the image.
 
 Why this exists: the only host->guest path AnssOS otherwise has is baking
 a file into the kernel image at build time (see scripts/gen-test-tone.py
-and kernel/src/exec/userland_blobs.S) -- fine for a small fixture, bad
+and kernel/src/exec/blobs.rs) -- fine for a small fixture, bad
 for anything sizeable, since it doubles the memory cost (resident kernel
 image + a duplicate VFS heap copy) and bloats/slows every kernel rebuild.
-blkfs (kernel/src/fs/blkfs.c) is AnssOS's own on-disk format -- not a
+blkfs (kernel/src/fs/blkfs.rs) is AnssOS's own on-disk format -- not a
 real filesystem, just a flat recursive dump of the VFS tree -- but it's
 simple enough to speak directly from the host. This script is a faithful
-byte-for-byte reimplementation of blkfs.c's serialize_node()/
-deserialize_node(), read-modify-write: it loads whatever's already on the
+byte-for-byte reimplementation of blkfs.rs's serialize() and its
+Reader, read-modify-write: it loads whatever's already on the
 image (if anything), adds/replaces files at VFS root, and writes it back,
 growing the image file if needed.
 
@@ -28,11 +28,11 @@ import struct
 import sys
 
 SECTOR_SIZE = 512
-MAGIC = 0x53464E41  # "ANFS" on disk, little-endian u32 -- see blkfs.c.
+MAGIC = 0x53464E41  # "ANFS" on disk, little-endian u32 -- see blkfs.rs.
 VERSION = 1
 VNODE_DIR = 0
 VNODE_FILE = 1
-NAME_MAX = 64  # kernel/src/fs/vfs.h's VFS_NAME_MAX -- names must fit under this.
+NAME_MAX = 64  # kernel/src/fs/vfs.rs's NAME_MAX -- names must fit under this.
 
 
 class Node:

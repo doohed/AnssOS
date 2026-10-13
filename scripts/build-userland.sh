@@ -1,89 +1,88 @@
 #!/usr/bin/env bash
-# Builds every ring-3 program: the tiny hand-rolled C test payloads
-# (hello, crash, malloctest, filetest, dirtest, forktest, forkchild,
-# preempttest, ...) used to prove the ring-3 pipeline end-to-end, and the
-# Rust programs in userland/rust/ (sh, play, scarf, tile -- see
-# docs/rust.md). Drops their built ELF binaries where
-# kernel/src/exec/userland_blobs.S expects to find them (via .incbin) so
-# they get embedded directly into the kernel image -- see main.c for how
-# they land on the VFS (/bin) at boot.
+# Builds every ring-3 program -- all Rust, in one Cargo workspace,
+# userland/rust/ (see docs/rust.md): the interactive programs (sh, play,
+# scarf, tile) and the small self-test payloads (hello, crash,
+# malloctest, ...) that prove the ring-3 pipeline end to end. Drops their
+# built ELF binaries where kernel/src/exec/blobs.rs expects to find them
+# (include_bytes!) so they get embedded directly into the kernel image --
+# see kmain (kernel/src/main.rs) for how they land in /bin at boot.
 #
 # This is a genuinely separate build (its own toolchain flags, its own
 # linker script) from the kernel itself -- these are ring-3 userland
 # programs, not kernel code -- run before `make -C kernel` since the
-# kernel's .incbin depends on its output.
+# kernel embeds its output.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Same CC/LD override as kernel/GNUmakefile, for the same reason: native
 # cc/ld on an x86_64 host, clang/ld.lld when docker/Dockerfile's ENV says
-# so. clang defaults to the host triple, so it needs telling that these
-# are bare-metal x86_64 binaries; gcc gets nothing extra.
+# so. The only C left in userland is play's MP3 decoder (minimp3, see
+# userland/rust/play/c/mp3.c); clang defaults to the host triple, so it
+# needs telling that it's building bare-metal x86_64; gcc gets nothing
+# extra.
 CC="${CC:-cc}"
 LD="${LD:-ld}"
 # Unlike the kernel, userland may use x87/SSE: the kernel saves/restores
 # each process's FPU registers around every dispatch (kernel/src/arch/
-# x86_64/fpu.h) -- needed by play's MP3 decoder. userland/include holds
-# the minimal <string.h>/<stdlib.h> shims vendored code like minimp3
-# (userland/rust/play/vendor/) expects, backed by this libc.
+# x86_64/fpu.rs) -- which minimp3 needs, being float-based. play/c/include
+# holds the minimal <string.h>/<stdlib.h> it includes; there's no libc.
 CFLAGS=(-g -O2 -ffreestanding -fno-stack-protector -fno-stack-check -fno-pic -fno-pie
     -ffunction-sections -fdata-sections -m64 -march=x86-64 -mabi=sysv -mno-red-zone
-    -I userland/include)
+    -I userland/rust/play/c/include)
 if "$CC" --version 2>/dev/null | grep -qi clang; then
     CFLAGS+=(--target=x86_64-unknown-none)
 fi
-LDFLAGS=(-m elf_x86_64 -nostdlib -static --gc-sections -T userland/link.ld)
+# The programs come only as archives, which a linker searches just for
+# symbols something already needs -- -u makes that `_start` (in anssos).
+LDFLAGS=(-m elf_x86_64 -nostdlib -static --gc-sections -T userland/link.ld -u _start)
 
-# The libc every program links against -- see userland/libc.h.
-LIBC_SRCS=(crt0.S syscalls.c libc/string.c libc/malloc.c libc/stdio.c libc/termios.c libc/dirent.c)
-
-build_program() {
-    local name="$1"
-    shift
-    local objs=()
-    for src in "${LIBC_SRCS[@]}" "$@"; do
-        if [[ "$src" == *.a ]]; then
-            objs+=("userland/$src") # prebuilt archive, e.g. a Rust staticlib
-            continue
-        fi
-        local obj="userland/${src%.*}.o"
-        "$CC" "${CFLAGS[@]}" -c "userland/$src" -o "$obj"
-        objs+=("$obj")
-    done
-    "$LD" "${LDFLAGS[@]}" "${objs[@]}" -o "userland/${name}.elf"
-    cp "userland/${name}.elf" "kernel/src/exec/${name}.elf.bin"
-}
-
-build_program hello hello.c
-build_program crash crash.c
-build_program malloctest malloctest.c
-build_program filetest filetest.c
-build_program dirtest dirtest.c
-build_program forktest forktest.c
-build_program forkchild forkchild.c
-build_program preempttest preempttest.c
-build_program termtest termtest.c
-build_program readdirtest readdirtest.c
-# Rust programs live in one Cargo workspace, userland/rust/ (see its
-# Cargo.toml): each is a no_std staticlib exporting the `main` crt0
-# calls, linked here with the C libc (and any C sources of its own) like
-# any other program. --config names the workspace's own config
-# explicitly (target x86_64-unknown-none), since cargo otherwise only
-# finds .cargo/config.toml relative to the current directory.
+# Every program is a no_std staticlib exporting a `main`; the `anssos`
+# runtime crate in each provides `_start`, which calls it. --config names
+# the workspace's own config explicitly (target x86_64-unknown-none),
+# since cargo otherwise only finds .cargo/config.toml relative to the
+# current directory.
 cargo build --release --quiet \
     --manifest-path userland/rust/Cargo.toml \
     --config userland/rust/.cargo/config.toml
-RUST_OUT=rust/target/x86_64-unknown-none/release
+RUST_OUT=userland/rust/target/x86_64-unknown-none/release
 
-build_program sh "$RUST_OUT/libsh.a"
-build_program play rust/play/c/mp3.c "$RUST_OUT/libplay.a"
-build_program scarf "$RUST_OUT/libscarf.a"
-build_program tile "$RUST_OUT/libtile.a"
-build_program pipetest pipetest.c
+# Links one program from its staticlib plus any C sources of its own,
+# with any extra linker flags given after `--`.
+build_program() {
+    local name="$1" lib="$2"
+    shift 2
+    local objs=("$RUST_OUT/lib${lib}.a") ldextra=()
+    while (($#)); do
+        if [[ "$1" == -- ]]; then
+            shift
+            ldextra=("$@")
+            break
+        fi
+        local obj="${1%.*}.o"
+        "$CC" "${CFLAGS[@]}" -c "$1" -o "$obj"
+        objs=("$obj" "${objs[@]}")
+        shift
+    done
+    "$LD" "${LDFLAGS[@]}" ${ldextra[@]+"${ldextra[@]}"} "${objs[@]}" -o "userland/${name}.elf"
+    cp "userland/${name}.elf" "kernel/src/exec/${name}.elf.bin"
+}
+
+build_program sh sh
+build_program play play userland/rust/play/c/mp3.c
+build_program scarf scarf
+build_program tile tile
+
+# The self-tests are one staticlib, each test exporting `<name>_main`:
+# pointing `main` at one and letting --gc-sections drop the rest gives
+# each its own small ELF (userland/rust/selftest/src/lib.rs).
+SELFTESTS=(hello crash malloctest filetest dirtest forktest forkchild preempttest termtest readdirtest pipetest)
+for t in "${SELFTESTS[@]}"; do
+    build_program "$t" selftest -- "--defsym=main=${t}_main"
+done
 
 # Not a userland ELF -- a synthesized WAV fixture for `play` (see the
-# script itself for why), dropped at the same src/exec/*.bin location
-# userland_blobs.S expects.
+# script itself for why), dropped at the same kernel/src/exec/*.bin
+# location blobs.rs expects.
 python3 scripts/gen-test-tone.py # relative to the repo root, where the cd above put us
 
-echo "Built userland/{hello,crash,malloctest,filetest,dirtest,forktest,forkchild,preempttest,termtest,readdirtest,scarf,play,pipetest,sh,tile}.elf"
+echo "Built userland/{sh,play,scarf,tile,$(IFS=,; echo "${SELFTESTS[*]}")}.elf"

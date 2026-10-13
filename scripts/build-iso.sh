@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds kernel/bin/kernel and assembles a UEFI-only AnssOS.iso.
 #
-# Requires: gcc/ld (kernel build), xorriso (ISO assembly).
+# Requires: cargo and ld (kernel build), xorriso (ISO assembly).
 #   sudo apt-get install -y xorriso
 #
 # This is the single source of truth for how the ISO gets built -- the
