@@ -3,87 +3,42 @@
 
 override OUTPUT := kernel
 
-# Overridable from the environment so a cross-build works without editing
-# anything here: on an x86_64 Linux host these stay the native cc/ld, and
-# docker/Dockerfile sets CC=clang / LD=ld.lld for a non-x86_64 host.
-CC ?= cc
+# Overridable from the environment, like scripts/build-userland.sh: the
+# native ld on an x86_64 Linux host, ld.lld where docker/Dockerfile says so.
 LD ?= ld
 
-# User controllable flags.
-CFLAGS := -g -O2 -pipe -Wall -Wextra -std=gnu11
-CPPFLAGS := -I src
-
-# Internal flags that should not be changed by the user: this is a
-# freestanding x86_64 long-mode kernel loaded by Limine, so no libc,
-# no red zone (interrupts can land on top of the stack otherwise), no
-# SIMD: the x87/SSE registers belong to userland, saved/restored per
-# process by src/arch/x86_64/fpu.c -- kernel code must never touch them.
-override CFLAGS += \
-    -ffreestanding \
-    -fno-stack-protector \
-    -fno-stack-check \
-    -fno-lto \
-    -fno-PIC \
-    -ffunction-sections \
-    -fdata-sections \
-    -m64 \
-    -march=x86-64 \
-    -mabi=sysv \
-    -mno-80387 \
-    -mno-mmx \
-    -mno-sse \
-    -mno-sse2 \
-    -mno-red-zone \
-    -mcmodel=kernel
-
-# gcc only ever builds for the machine it was built for, so a native
-# x86_64 gcc needs nothing extra and gets nothing extra -- the flags above
-# are exactly what it saw before. clang is a cross-compiler by
-# construction, though, and defaults to the *host* triple, so on a non-x86
-# host it has to be told what we're building for. -unknown-none (rather
-# than -linux-gnu) is the bare-metal triple: no OS, no libc assumptions,
-# which is what -ffreestanding above is already asking for anyway.
-ifneq (,$(findstring clang,$(shell $(CC) --version 2>/dev/null)))
-override CFLAGS += --target=x86_64-unknown-none
-endif
-
-override CPPFLAGS += -MMD -MP
-
+# The kernel is one Rust crate (Cargo.toml, src/), built as a static
+# library for x86_64-unknown-none and linked here with linker.ld --
+# Limine's higher-half layout. -u kmain is what pulls the crate out of the
+# archive: a linker only takes an archive member that defines a symbol
+# something already needs.
 override LDFLAGS := \
     -m elf_x86_64 \
     -nostdlib \
     -static \
     -z max-page-size=0x1000 \
     --gc-sections \
-    -T linker.ld
+    -T linker.ld \
+    -u kmain
 
-CFILES := $(shell find src -type f -name '*.c')
-ASFILES := $(shell find src -type f -name '*.S')
-OBJ := $(CFILES:.c=.c.o) $(ASFILES:.S=.S.o)
-HEADER_DEPS := $(CFILES:.c=.c.d) $(ASFILES:.S=.S.d)
+RUST_LIB := target/x86_64-unknown-none/release/libkernel.a
 
 .PHONY: all
 all: bin/$(OUTPUT)
 
-bin/$(OUTPUT): GNUmakefile linker.ld $(OBJ)
+bin/$(OUTPUT): GNUmakefile linker.ld $(RUST_LIB)
 	mkdir -p "$(dir $@)"
-	$(LD) $(LDFLAGS) $(OBJ) -o $@
+	$(LD) $(LDFLAGS) $(RUST_LIB) -o $@
 
--include $(HEADER_DEPS)
+# Cargo tracks its own dependencies -- the sources, and the userland
+# binaries src/exec/blobs.rs embeds -- so it's simply asked every time;
+# it finishes at once when nothing changed.
+$(RUST_LIB): FORCE
+	cargo build --release --quiet
 
-%.c.o: %.c GNUmakefile
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-
-%.S.o: %.S GNUmakefile
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
-
-# .incbin isn't an #include, so -MMD never records the embedded userland
-# payloads as dependencies -- editing a userland program and rebuilding
-# would quietly keep the *previous* binary in the kernel image, since
-# userland_blobs.S itself hadn't changed. The blobs exist by the time
-# this is parsed: build-iso.sh runs scripts/build-userland.sh first.
-src/exec/userland_blobs.S.o: $(wildcard src/exec/*.elf.bin)
+.PHONY: FORCE
+FORCE:
 
 .PHONY: clean
 clean:
-	rm -rf bin $(OBJ) $(HEADER_DEPS)
+	rm -rf bin target

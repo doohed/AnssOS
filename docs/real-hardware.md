@@ -4,6 +4,12 @@ The plan for booting AnssOS on a real PC instead of QEMU. The target
 machine is a Ryzen 5 5600G on a MAXSUN B550M board with an RX 5600 XT,
 but almost everything here applies to any modern x86_64 UEFI PC.
 
+The kernel was C when most of this was done, and has since moved to Rust
+(M29). The finished phases' step-by-step plans below keep the C names
+they were written with; the drivers they describe are the same ones,
+now `kernel/src/**/*.rs` (`drivers/display.c` is `drivers/display.rs`,
+`drivers/usb/xhci.c` is `drivers/usb/mod.rs`, and so on).
+
 ## Where things stand
 
 Phase 1 is done: the real PC boots to the shell on its own screen
@@ -12,19 +18,19 @@ driver:
 
 | Need | Today | On the real PC |
 |---|---|---|
-| Screen | virtio-gpu, or the GOP framebuffer (`drivers/display.c`) | **Done:** the RX 5600 XT's GOP framebuffer, handed over by Limine |
+| Screen | virtio-gpu, or the GOP framebuffer (`drivers/display.rs`) | **Done:** the RX 5600 XT's GOP framebuffer, handed over by Limine |
 | Keyboard | virtio-input, USB (`drivers/usb/`), or COM1 | **Done:** USB via xHCI (the board has no PS/2 port) |
-| Disk | virtio-blk; NVMe, SATA and USB storage read-only (`drivers/block.c`) | Installed onto a whole dedicated drive -- drivers **work in QEMU, untested on the PC**; installer next |
-| Audio | virtio-sound, or HD Audio (`drivers/hda.c`) | The board's HD Audio analog outputs -- **works in QEMU, untested on the PC**; the GPU's HDMI/DP audio needs a GPU driver |
-| Timer | LAPIC timer calibrated against the ACPI PM timer; PIT through the 8259 as a fallback (`drivers/timer.c`) | The PIT path hung the first real boot; the LAPIC timer needs no routing |
+| Disk | virtio-blk; NVMe, SATA and USB storage read-only (`drivers/block.rs`) | Installed onto a whole dedicated drive -- drivers **work in QEMU, untested on the PC**; installer next |
+| Audio | virtio-sound, or HD Audio (`drivers/hda.rs`) | The board's HD Audio analog outputs -- **works in QEMU, untested on the PC**; the GPU's HDMI/DP audio needs a GPU driver |
+| Timer | LAPIC timer calibrated against the ACPI PM timer; PIT through the 8259 as a fallback (`drivers/timer.rs`) | The PIT path hung the first real boot; the LAPIC timer needs no routing |
 | Other interrupts | 8259 PIC through LAPIC LINT0 (unused: every driver polls) | IO-APIC or MSI-X once drivers use interrupts |
 | Debug log | COM1 (`-serial stdio`), skipped when no UART answers | Only if the board has a COM header; otherwise the screen |
 
 Things that already carry over: Limine boots over UEFI, the ISO is a
 hybrid image with an EFI boot partition (so it can be written straight to
 a USB stick), the PMM sizes itself from the memory map (fine for 16-64
-GiB), `vmm_map_mmio()` handles BARs anywhere in the address space,
-`virtio.c` already reads 64-bit BARs, and `reboot`'s triple fault works
+GiB), `vmm::map_mmio()` handles BARs anywhere in the address space,
+the virtio transport already reads 64-bit BARs, and `reboot`'s triple fault works
 on any x86 CPU.
 
 Out of scope: a real `amdgpu` driver for the RX 5600 XT or the 5600G's
@@ -72,7 +78,7 @@ and phase 6 (which codec and pins).
 **Status: done, on the real PC too.** 1a-1c verified in `run-qemu.sh
 --pc` (1920x1080 GOP, 4 GiB, no virtio devices, with and without a
 serial port): splash, scrolling log, `sh`, and `scarf` full-screen. 1d
-took three boots on the real PC, below. One fix beyond the plan: `serial_init()` now
+took three boots on the real PC, below. One fix beyond the plan: `serial::init()` now
 checks a UART is really at COM1, because a missing one reads as an
 endless stream of phantom `0xFF` key presses -- which the shell, now
 running without a keyboard, would otherwise have received.
@@ -84,8 +90,8 @@ the 8259 and LAPIC LINT0, which QEMU wires up and this board evidently
 doesn't (or the firmware left the LAPIC in x2APIC mode, where the old
 MMIO setup is silently ignored -- no serial port, so no way to tell
 which). Phase 5's timer item was pulled forward to fix it:
-`drivers/timer.c` now runs the Local APIC timer, in xAPIC or x2APIC
-mode, calibrated against the ACPI PM timer (`drivers/acpi.c`) or PIT
+`drivers/timer.rs` now runs the Local APIC timer, in xAPIC or x2APIC
+mode, calibrated against the ACPI PM timer (`drivers/acpi.rs`) or PIT
 channel 2 polled, and checks after `sti` that ticks really arrive --
 falling back to the PIT, and failing that to busy-wait sleeps, rather
 than hanging. Each path was forced and verified in QEMU, and the boot
@@ -97,7 +103,7 @@ fault.** The timer worked (LAPIC, xAPIC, ARAT). The PMM returns 0 for
 firmware reports the first 640 KiB, from address 0, as usable RAM,
 which QEMU's never does. So the heap's first page-run allocation got
 page 0, read it as a failure, and the filesystem root was never
-created. `pmm_init()` now always reserves page 0; page-fault dumps also
+created. `pmm::init()` now always reserves page 0; page-fault dumps also
 print `cr2` (the faulting address), and a missing VFS root stops boot
 with a message instead of a fault.
 
@@ -154,7 +160,7 @@ invisible.
 
 - Bring the framebuffer console up **before** PCI enumeration (the GOP
   path doesn't need PCI), so early panics land on screen.
-- Keep a kernel log ring buffer from the first `kprintf`, replayed onto
+- Keep a kernel log ring buffer from the first log line, replayed onto
   the screen once fbconsole is up, and add a `dmesg` builtin.
 - Make the exception handler's register dump fit on one screen, and stop
   there instead of scrolling it away.
@@ -199,7 +205,7 @@ thousand lines):
    then poll its interrupt-IN endpoint for 8-byte boot reports and turn
    key-down transitions into bytes, plus key repeat driven by the timer
    tick. HID usages are converted to Linux key codes so the virtio
-   keyboard and this one share one keymap (`drivers/keymap.c`).
+   keyboard and this one share one keymap (`drivers/keymap.rs`).
 
 First version supports a keyboard plugged **directly** into a rear port,
 including after boot. USB hubs (including ones inside monitors, and some
@@ -217,17 +223,17 @@ storage drivers came first, tested on the PC read-only.
 
 **4a. Storage drivers, read-only on the PC -- done in QEMU.**
 
-- `drivers/block.c`: every disk behind one interface, bounds-checked,
-  in the disk's own sector size. **Writes are locked**: `block_write()`
+- `drivers/block.rs`: every disk behind one interface, bounds-checked,
+  in the disk's own sector size. **Writes are locked**: a block write
   refuses unless the kernel command line (limine.conf `cmdline:`) has
   `allow-disk-writes`, which only test ISOs carry -- `AnssOS.iso` never
   does. virtio-blk (`AnssOS-disk.img`) isn't part of this layer.
-- `drivers/nvme.c` (nvme0, ...), `drivers/ahci.c` (sata0, ...; CD/DVD
-  drives skipped) and `drivers/usb/usb_storage.c` (usb0, ...; Bulk-Only
-  Transport + SCSI, on new bulk transfers in `drivers/usb/xhci.c`).
+- `drivers/nvme.rs` (nvme0, ...), `drivers/ahci.rs` (sata0, ...; CD/DVD
+  drives skipped) and `drivers/usb/storage.rs` (usb0, ...; Bulk-Only
+  Transport + SCSI, on new bulk transfers in `drivers/usb/mod.rs`).
   Bringing any of them up only resets controllers and asks questions;
   a drive's data is only touched by reads and (unlocked) writes.
-- `drivers/partition.c`: GPT (both CRCs checked) or MBR, each partition
+- `drivers/partition.rs`: GPT (both CRCs checked) or MBR, each partition
   with its type, size, name and filesystem (NTFS, FAT, exFAT, ext,
   BitLocker, btrfs, XFS, LUKS, ISO 9660, blkfs). Printed at boot and by
   the kernel shell's `lsblk`.
@@ -267,7 +273,7 @@ from that image alone and check files survive a reboot.
 Not strictly required for the phases above, but they make the system
 behave correctly rather than by luck:
 
-- **ACPI tables:** `drivers/acpi.c` already walks the XSDT/RSDT for the
+- **ACPI tables:** `drivers/acpi.rs` already walks the XSDT/RSDT for the
   FADT's PM timer; still to read: MADT for the IO-APIC and the CPU list,
   the FADT's reset register.
 - **IO-APIC** instead of the 8259 through LINT0, or **MSI-X** per device

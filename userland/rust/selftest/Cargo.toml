@@ -1,0 +1,16 @@
+[package]
+name = "selftest"
+description = "The self-test payloads that prove AnssOS's ring-3 pipeline end to end"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# One staticlib holding every test, each exporting its own `<name>_main`.
+# scripts/build-userland.sh links it once per test with
+# --defsym=main=<name>_main, and --gc-sections drops the other tests.
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+anssos.workspace = true

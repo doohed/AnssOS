@@ -1,21 +1,20 @@
 //! `play` -- an interactive WAV/MP3 player for AnssOS, with a ratatui
 //! UI. Plays the files named on argv in order through the virtio-sound
-//! driver (kernel/src/drivers/virtio/virtio_snd.c), polling poll_key()
+//! driver (kernel/src/drivers/virtio/snd.rs), polling poll_key()
 //! between chunks for the playback controls so the loop feeding the
 //! device never blocks on the keyboard.
 //!
 //! This is a `no_std` static library, not a normal Rust binary: there is
-//! no Rust std for AnssOS. scripts/build-userland.sh links it with crt0.o
-//! (which calls the `main` below exactly as it would a C program's), the
-//! hand-written C libc, and minimp3 (c/mp3.c, see source.rs). The
-//! `anssos` runtime crate wraps the libc and provides the allocator and
-//! panic handler.
+//! no Rust std for AnssOS. scripts/build-userland.sh links it with
+//! minimp3 (c/mp3.c, see source.rs). The `anssos` runtime crate provides
+//! `_start` (which calls the `main` below), the syscalls, the allocator
+//! and the panic handler.
 //!
 //! The crate builds for x86_64-unknown-none, which is soft-float: the
 //! little float math ratatui does (layout, gauge ratios) runs in
 //! software, and the hot paths (PCM, spectrum) stay integer. minimp3, in
 //! C, does use SSE -- safe since the kernel saves/restores each
-//! process's FPU state (kernel/src/arch/x86_64/fpu.h).
+//! process's FPU state (kernel/src/arch/x86_64/fpu.rs).
 
 #![no_std]
 

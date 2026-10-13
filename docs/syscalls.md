@@ -2,7 +2,7 @@
 
 Entry is `int 0x80` -- vector `0x80` is the one deliberately `DPL=3`
 gate in the IDT, and the only way into the kernel from ring 3. There is
-no `SYSCALL`/`SYSRET` fast path yet. `exec/syscall.c` dispatches on the
+no `SYSCALL`/`SYSRET` fast path yet. `exec/syscall.rs` dispatches on the
 number in `rax`; arguments follow the ordinary System V register order
 (`rdi`, `rsi`, `rdx`).
 
@@ -56,13 +56,13 @@ not-a-real-syscall:
 | 901 | `audio_write` | `audio_write(buf, len)` | S16LE PCM; blocks until the device has consumed it |
 | 902 | `audio_close` | `audio_close()` | |
 | 903 | `poll_key` | `poll_key()` | non-blocking; -1 if no key is ready. With a piped stdin (a tile pane) it reads that pipe instead of the keyboard, and returns -2 once the pipe is closed |
-| 905 | `copy` | `copy_path(src, dest)` (libc name) | copies a file or a whole directory tree; same `dest` rule as `rename` |
+| 905 | `copy` | `copy_path(src, dest)` (`anssos::sys` name) | copies a file or a whole directory tree; same `dest` rule as `rename` |
 | 904 | `use_as_stdio` | `use_as_stdio(stdin_fd, stdout_fd)` | points this task's fd 0/1 at the pipes behind two existing fds |
 
 `poll_key` is what makes an interactive audio player possible without
 threads or `poll`/`select`: it's the exact same non-blocking
-`virtio_input_poll_char()`/`serial_poll_char()` pattern `shell.c`'s own
-`read_line()` already polls with, exposed as a syscall so a playback
+`input::poll_char()` the kernel shell's own `read_line()` already polls
+with, exposed as a syscall so a playback
 loop can check for a control key without ever blocking the loop that
 feeds the audio device — see [play.md](play.md).
 
@@ -78,9 +78,9 @@ pipe end afterward.
 
 ## Pipes (M19)
 
-`pipe()` creates a `struct pipe` (`kernel/src/exec/pipe.h`) — a small,
+`pipe()` creates a `Pipe` (`kernel/src/exec/pipe.rs`) — a small,
 fixed-size (4096 byte) in-kernel ring buffer, deliberately unrelated to
-`struct vnode`: a pipe has no tree identity and needs bounded,
+a `Vnode`: a pipe has no tree identity and needs bounded,
 ref-counted open/closed state a vnode's whole-buffer-regrow write model
 doesn't fit.
 
@@ -89,7 +89,7 @@ doesn't fit.
 every write-end reference gone); `write()` copies as much as fits and
 returns a short count rather than blocking on a full buffer. This isn't
 a simplification of convenience: `irq_handler()`'s preemption check
-(`arch/x86_64/idt.c`) only fires when the timer interrupts *ring-3*
+(`arch/x86_64/idt.rs`) only fires when the timer interrupts *ring-3*
 code, never ring-0, so a busy-spin inside a syscall handler waiting on
 *another process* to produce data would never yield the CPU to that
 process — a real deadlock, not a style choice. A program that wants
@@ -99,10 +99,10 @@ yields with `sched_yield()` between empty reads), the same shape
 `poll_key()`-based loops already use elsewhere.
 
 References are counted, not tracked as a single "open" boolean — `fork()`
-shallow-copies the *entire* `open_files[]` table (same as every other
+copies the *entire* `open_files` table (same as every other
 fd), so after a `fork()` both parent and child hold independent table
 entries referencing the same pipe, and closing one's copy must not
-silently close the other's. `process_fork()` bumps the relevant
+silently close the other's. `process::fork()` bumps the relevant
 refcount for every pipe-backed entry it copies to keep this correct.
 There's no `O_CLOEXEC`/close-on-exec either — a child that inherits fds
 it doesn't know about (e.g. tile spawning a *second* pane while the
@@ -126,10 +126,9 @@ RSP ->  argc
         ... argument strings ...
 ```
 
-`crt0.S` reads `argc` into `%rdi` and `argv` into `%rsi`, aligns the
-stack to 16 bytes, and calls `main`. Programs declaring `main(void)`
-simply ignore the two registers, which is why adding argv did not
-require touching every existing payload.
+`_start` (`userland/rust/anssos/src/start.rs`) reads `argc` into
+`%rdi` and `argv` into `%rsi`, aligns the stack to 16 bytes, and calls
+the program's `main(argc, argv)`, then exits with its return value.
 
 It is written through the HHDM rather than through the new address
 space: the stack pages come from a single `pmm_alloc_pages()` run, so
@@ -165,10 +164,10 @@ size: the pane's child sets it once before exec'ing `sh`, and
 everything `sh` runs inherits it.
 
 **File operations are the kernel shell's.** `unlink`, `rename` and
-`copy` call the same `fs/vfs.c` functions as the kernel shell's
+`copy` call the same `fs/vfs.rs` functions as the kernel shell's
 `delete`, `move` and `copy`, with the same refusals. Those functions
-report errors with `kprintf()`; on a program's behalf that output is
-kept off the screen (serial only, via `kprintf_mute_console()`), and the
+report errors to the kernel log; on a program's behalf that output is
+kept off the screen (serial only, via `serial::mute_console()`), and the
 syscall just returns -1 for the program to report. Nothing a program
 writes is on disk until something calls `sync`.
 

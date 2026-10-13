@@ -1,20 +1,22 @@
 # Building and running
 
 
-Needs `nasm`, `qemu-system-x86_64`, `qemu-img`, OVMF firmware, `xorriso`,
+Needs `qemu-system-x86_64`, `qemu-img`, OVMF firmware, `xorriso`,
 `mtools`, and `python3` (`scripts/gen-test-tone.py`/`scripts/disk-put.py`
 synthesize/inject audio assets -- see [play.md](play.md) -- and need real
-binary struct packing and float math bash doesn't have):
+binary struct packing and float math bash doesn't have), plus a C
+compiler and `ld` -- `cc` for the one C file left, `play`'s MP3 decoder,
+and `ld` to link the kernel and every program:
 
 ```sh
-sudo apt-get install -y nasm qemu-system-x86 qemu-utils ovmf xorriso mtools python3
+sudo apt-get install -y qemu-system-x86 qemu-utils ovmf xorriso mtools python3
 ```
 
-The interactive programs -- `sh`, `play`, `scarf` and `tile` -- are Rust
-(the `userland/rust/` workspace, see [rust.md](rust.md)), so the build
-also needs a Rust toolchain from [rustup](https://rustup.rs) plus the
-bare-metal x86_64 target. The first build downloads its crates (ratatui and its
-dependencies) from crates.io:
+Everything else is Rust -- the kernel (`kernel/`) and every program (the
+`userland/rust/` workspace), see [rust.md](rust.md) -- so the build also
+needs a Rust toolchain from [rustup](https://rustup.rs) plus the
+bare-metal x86_64 target. The first build downloads userland's crates
+(ratatui and its dependencies) from crates.io; the kernel has none:
 
 ```sh
 rustup target add x86_64-unknown-none
@@ -24,7 +26,7 @@ Building and running are two separate scripts (`make`/`make run` are thin
 wrappers around them, if you'd rather not call them directly):
 
 ```sh
-./scripts/build-iso.sh   # build userland (C and Rust), kernel/bin/kernel, and assemble AnssOS.iso
+./scripts/build-iso.sh   # build userland, kernel/bin/kernel, and assemble AnssOS.iso
 ./scripts/run-qemu.sh    # boot the already-built ISO (UEFI/OVMF, virtio-gpu-pci, serial on stdout)
 ```
 
@@ -75,20 +77,20 @@ caring about.
 
 `CC`/`LD` come from the image's `ENV`, so nothing needs configuring
 inside it; `kernel/GNUmakefile` and `scripts/build-userland.sh` both
-default to `cc`/`ld` when those aren't set and only add the `--target`
-flag when the compiler actually reports itself as clang, so a native
-x86_64 gcc build produces the exact same command line it did before any
-of this existed. The `ovmf` package is worth a note too: it's
+default to `cc`/`ld` when those aren't set, and the userland script only
+adds the `--target` flag when the compiler actually reports itself as
+clang, so a native x86_64 gcc build gets nothing extra. The `ovmf` package is worth a note too: it's
 `Architecture: all` in Debian (the firmware is x86 machine code, but it's
 shipped as data, not as an executable the host has to run), so it
 installs on arm64 unchanged and lands in `/usr/share/OVMF/` as the split
 `OVMF_CODE_4M.fd`/`OVMF_VARS_4M.fd` pair that `run-qemu.sh`'s existing
 auto-detection already looks for first.
 
-The image also carries a Rust toolchain for `userland/rust/`, installed
-with rustup rather than apt: Debian's `rustc` ships no prebuilt
-`core`/`alloc` for `x86_64-unknown-none`. Like clang, it's a native
-arm64 toolchain targeting x86_64, so nothing is emulated there either.
+The image also carries a Rust toolchain for the kernel and
+`userland/rust/`, installed with rustup rather than apt: Debian's `rustc`
+ships no prebuilt `core`/`alloc` for `x86_64-unknown-none`. Like clang,
+it's a native arm64 toolchain targeting x86_64, so nothing is emulated
+there either.
 
 The container runs as root, so files it creates in the bind mount are
 root-owned. On Docker Desktop for Mac that's invisible — the VirtioFS
@@ -97,14 +99,13 @@ mount maps ownership back to you — but on a Linux host you'll want to
 
 ## Code style
 
-`.clang-format` at the repo root defines the style (4-space indent, braces
-attached, pointers glued to the name). `scripts/format.sh` applies it to
-every `kernel/src/**/*.{c,h}` file except `boot/limine.h`, which stays
-as fetched upstream, and `console/font8x16.h`, which
-`scripts/gen-font.py` generates:
+The kernel is formatted with rustfmt, set up by `kernel/rustfmt.toml`
+(120 columns, `use_small_heuristics = "Max"`). `scripts/format.sh`
+applies it; the generated font tables (`console/font.rs`) opt out with
+`#[rustfmt::skip]`:
 
 ```sh
-sudo apt-get install -y clang-format
+rustup component add rustfmt
 ./scripts/format.sh            # reformat in place
 ./scripts/format.sh --check    # verify only, non-zero exit if anything's off (CI-friendly)
 ```

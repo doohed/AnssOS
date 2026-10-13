@@ -17,7 +17,7 @@ pub struct Pane {
 impl Pane {
     /// Starts `path` with fresh pipes as its stdin/stdout and its window
     /// size set to `cols`x`rows` -- what TIOCGWINSZ will report to it and
-    /// to everything it runs (kernel/src/drivers/tty.h's TIOCSWINSZ), so
+    /// to everything it runs (kernel/src/drivers/tty.rs's TIOCSWINSZ), so
     /// a full-screen program lays itself out inside the pane. `others`
     /// are earlier panes' fds: fork() copies every open fd and there's
     /// no close-on-exec, so the child closes them itself -- a copy left

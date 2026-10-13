@@ -654,6 +654,43 @@ virtio-gpu queue.
       page an earlier one already mapped. Also fixed:
       `build-userland.sh` failing when run from inside `scripts/`.
 
+- [x] **M28 -- userland is all Rust.** `crt0.S`, the hand-written C
+      libc and the C self-tests are gone. The `anssos` crate now makes
+      the `int 0x80` syscalls itself (`sys.rs`), provides `_start`
+      (`start.rs`) and allocates from the `brk` heap with its own
+      first-fit free list (`heap.rs`, the kernel heap's design). The
+      self-tests are one `selftest` crate; the build links it once per
+      test with `--defsym=main=<name>_main`, so each test is still its
+      own small ELF in `/bin`. The only C left in userland is minimp3:
+      it does its float math with SSE, where a Rust decoder on the
+      soft-float `x86_64-unknown-none` target couldn't, and it needs
+      only the `memcpy`/`memmove`/`memset` that Rust's
+      `compiler_builtins` already defines. See [rust.md](rust.md).
+
+- [x] **M29 -- the kernel is Rust.** Moved over one subsystem at a time,
+      booting after every step: the Rust crate (`kernel/`) started as a
+      static library linked into the C kernel, each ported module
+      exporting the C functions its `.c` file used to, so the C that was
+      left called it unchanged. In order: the boot requests, serial and
+      memory management; the GDT, PIC, LAPIC, FPU, timer and PCI; the
+      virtio drivers and HD Audio; storage and USB; the console; the
+      VFS; and last, together, the IDT, ring-3 entry, processes,
+      syscalls, kernel shell and `kmain`, after which the C-facing
+      shims came off. The kernel's assembly is now `global_asm!`
+      (`arch/x86_64/stubs.rs`), the embedded userland is
+      `include_bytes!` (`exec/blobs.rs`), `scripts/gen-font.py` writes
+      Rust, and rustfmt replaced clang-format. Some designs changed
+      where Rust made it natural: disks are a `BlockDriver` trait, USB
+      devices are shared references with their state in `Cell`s (a
+      transfer's callback re-enters the driver), and file contents are
+      a `Vec<u8>`. **What the port turned up:** the C heap's 24-byte
+      block header meant a `kmalloc()` payload was only guaranteed 8-byte
+      alignment, whatever `HEAP_ALIGN` said (the Rust heap's header is 32
+      bytes, so payloads really are 16-byte aligned); and the virtio-input
+      device name includes its terminating NUL in its length, which the
+      C hid by stopping at the NUL when printing. See
+      [rust.md](rust.md#the-kernel).
+
 **Explicitly out of scope for now:** making virtio interrupt-driven
 (their PCI interrupt routing is a separate concern from the ISA IRQ0-15
 path above), APIC/IOAPIC beyond the minimal LINT0 passthrough above (no
@@ -665,10 +702,9 @@ dynamic linking/shared libraries, TLS, W^X/NX enforcement, the
 `O_EXCL`/`rmdir`/`unlink` from userland,
 an `init` process/orphan reparenting, priority scheduling (Phase B is
 plain round-robin), an actual musl (or similar) port capable of
-building arbitrary third-party C source — the libc is still hand-
-written and intentionally small, proving the pattern rather than being
-generally reusable yet — using FPU/SSE inside the kernel itself (M22
-gave userland per-process FPU state; kernel code stays `-mno-sse`), and
+building arbitrary third-party C source — userland has no C library at
+all since M28, only the Rust `anssos` runtime — using FPU/SSE inside the kernel itself (M22
+gave userland per-process FPU state; kernel code stays soft-float), and
 `XSAVE`/AVX state beyond what `FXSAVE` covers; general `dup2()`
 and close-on-exec (M19-M21 use a narrower `use_as_stdio()` instead, and
 tile's spawn logic closes inherited fds by hand — see

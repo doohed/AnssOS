@@ -2,7 +2,7 @@
 
 The AnssOS shell (`userland/rust/sh/`). The kernel boots straight into
 it, and [tile](tile.md) runs one in every pane. If it exits, the
-kernel-resident shell (`kernel/src/shell/shell.c`) takes over; typing
+kernel-resident shell (`kernel/src/shell.rs`) takes over; typing
 `sh` there starts it again.
 
 ```
@@ -170,8 +170,8 @@ before and after them.
 |---|---|
 | `unlink` (87), `rename` (82), `copy` (905), `sync` (162) | the file commands; the same filesystem operations as the kernel shell's |
 | `clock_gettime` (228, monotonic only) | the prompt's command duration |
-| 16 colors, bold and dim in `fbconsole.c` | the prompt, highlighting, grey suggestions |
-| UTF-8 and extra glyphs in `fbconsole.c` | the prompt's arrows, rounds, frame and icons |
+| 16 colors, bold and dim in `fbconsole.rs` | the prompt, highlighting, grey suggestions |
+| UTF-8 and extra glyphs in `fbconsole.rs` | the prompt's arrows, rounds, frame and icons |
 | escape sequences for arrows, Home/End, Delete from the virtio keyboard | cursor movement and history |
 | boot into `/bin/sh` | it's the shell you land in |
 

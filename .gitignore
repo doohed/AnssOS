@@ -1,9 +1,8 @@
 # Kernel build output
 kernel/bin/
-kernel/src/**/*.o
-kernel/src/**/*.d
 kernel/src/exec/*.elf.bin
 kernel/src/exec/*.wav.bin
+kernel/target/
 
 # Userland (test payload) build output
 userland/**/*.o

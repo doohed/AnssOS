@@ -3,7 +3,7 @@
 //!
 //! The shell draws with plain escape codes rather than a full-screen UI
 //! library: it's line-oriented and scrolls like any terminal program.
-//! The console (kernel/src/console/fbconsole.c) understands cursor
+//! The console (kernel/src/console/fbconsole.rs) understands cursor
 //! movement, erase, and SGR for the 16 ANSI colors, bold, dim and
 //! reverse -- that's all this uses. The console draws no cursor of its
 //! own, so the line editor draws one (a reverse-video cell).

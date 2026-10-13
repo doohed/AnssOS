@@ -2,7 +2,8 @@
 
 An interactive WAV/MP3 player with a [ratatui](https://ratatui.rs) UI,
 written in Rust (`userland/rust/play/`). It plays a playlist of files over the
-`virtio-sound` driver (`kernel/src/drivers/virtio/virtio_snd.c`, M17).
+`virtio-sound` driver (`kernel/src/drivers/virtio/snd.rs`, M17) -- or
+Intel HD Audio on a real PC (`kernel/src/drivers/hda.rs`).
 
 ```
 > play testtone.wav                # the built-in test fixture
@@ -44,7 +45,7 @@ first (minimum 3 rows), and labels that wouldn't fit are dropped.
 | `+` / `-` | volume up/down by 10%, clamped 0-200% |
 
 Controls only work over a **real terminal** — the same caveat
-`userland/termtest.c`'s own comment already gives for raw mode: a
+the `termtest` self-test's own comment already gives for raw mode: a
 scripted, non-interactive input stream never produces the actual
 keystrokes `poll_key()` is polling for.
 
@@ -80,12 +81,12 @@ otherwise from file size / bitrate (assumes CBR).
 
 This needed two kernel changes first, since minimp3 is float-based:
 
-- **Per-process FPU/SSE state** (`kernel/src/arch/x86_64/fpu.c`).
-  `fpu_init()` enables SSE (CR0/CR4), and `dispatch()` in
-  `arch/x86_64/usermode.c` eagerly `FXSAVE`s/`FXRSTOR`s each process's
+- **Per-process FPU/SSE state** (`kernel/src/arch/x86_64/fpu.rs`).
+  `fpu::init()` enables SSE (CR0/CR4), and `dispatch()` in
+  `arch/x86_64/usermode.rs` eagerly `FXSAVE`s/`FXRSTOR`s each process's
   registers around every dispatch -- including the nested one `wait()`
-  does. The kernel itself still builds with `-mno-sse -mno-80387`, so it
-  never touches those registers; userland now builds with SSE on.
+  does. The kernel itself builds soft-float, so it never touches those
+  registers; userland's C (minimp3) builds with SSE on.
 - **A 64 KiB user stack** (was 16 KiB): `mp3dec_decode_frame()` alone
   keeps a ~16 KiB scratch struct on the stack.
 
@@ -102,11 +103,13 @@ and the ratatui backend it draws through. Its own sources:
 userland/rust/play/
   src/              the player (lib.rs, source.rs, spectrum.rs, ui.rs)
   c/mp3.c           play's own C: compiles minimp3's implementation
+  c/include/        the <string.h>/<stdlib.h> minimp3 includes
   vendor/minimp3/   minimp3, vendored unmodified (CC0)
 ```
 
-`build-userland.sh` links `libplay.a` with `crt0.o`, the C libc and
-`c/mp3.c`.
+`build-userland.sh` links `libplay.a` with `c/mp3.c`. There's no C
+library: `c/include/` declares the `memcpy`/`memmove`/`memset` minimp3
+calls, which Rust's `compiler_builtins` provides.
 
 The screen (`play/src/ui.rs`) draws through ratatui's `Frame`/`Buffer`,
 `Line` and `Span`. The spectrum and the meters are small custom
@@ -166,19 +169,18 @@ host-mountable filesystem:
 
 **Small fixtures, baked into the kernel image.** What `testtone.wav`
 does: drop the file at `kernel/src/exec/<name>.wav.bin`, add an
-`.incbin` pair in `userland_blobs.S`/`.h`, and a `vfs_write_bytes()`
-call in `main.c`. Fine for a small built-in demo asset; costs a kernel
-rebuild every time, and the bytes end up resident twice at runtime (once
-in the kernel image itself, once in the VFS heap copy `vfs_write_bytes`
-makes) — a bad fit for anything beyond a few hundred KB.
+`include_bytes!` for it in `exec/blobs.rs`, and a `vfs::write_bytes()`
+call in `kmain` (`main.rs`). Fine for a small built-in demo asset; costs
+a kernel rebuild every time, and the bytes end up resident twice at
+runtime (once in the kernel image itself, once in the VFS heap copy
+`vfs::write_bytes()` makes) — a bad fit for anything beyond a few hundred KB.
 
 **Anything bigger: `scripts/disk-put.py`, straight onto the disk.**
-`blkfs` (`kernel/src/fs/blkfs.c`) is AnssOS's own on-disk format — not a
+`blkfs` (`kernel/src/fs/blkfs.rs`) is AnssOS's own on-disk format — not a
 real filesystem, just a flat recursive dump of the VFS tree (a 512-byte
 superblock, then each node as type/name/size/data) — simple enough to
 speak directly from the host, so this script is a faithful
-reimplementation of `blkfs.c`'s own `serialize_node()`/
-`deserialize_node()`. It reads whatever's already on `AnssOS-disk.img`
+reimplementation of `blkfs.rs`'s own `serialize()` and `Reader`. It reads whatever's already on `AnssOS-disk.img`
 (if anything), adds/replaces a file at VFS root, and writes it back,
 growing the image file as needed:
 ```
@@ -201,9 +203,9 @@ multi-hour one.
 
 | Capability | Why |
 |---|---|
-| `drivers/virtio/virtio_snd.c` | no audio driver of any kind existed before M17 |
+| the virtio-sound driver (`drivers/virtio/snd.rs`) | no audio driver of any kind existed before M17 |
 | `audio_open`/`audio_write`/`audio_close` syscalls | Linux does audio via `/dev/snd/*` + `ioctl`; AnssOS has no devfs, so there was no existing syscall shape to reuse |
-| `poll_key` syscall | a playback loop has to check for a control key *without* blocking — `read()`'s raw-mode "wait for one byte" behavior would stall audio output; this is `shell.c`'s own non-blocking `virtio_input_poll_char()`/`serial_poll_char()` poll, exposed as a syscall |
+| `poll_key` syscall | a playback loop has to check for a control key *without* blocking — `read()`'s raw-mode "wait for one byte" behavior would stall audio output; this is the kernel shell's own non-blocking keyboard poll (`input::poll_char()`), exposed as a syscall |
 | `testtone.wav` boot fixture (`scripts/gen-test-tone.py`) | there is no host-side way to get an arbitrary file onto the VFS (same reason `filetest.txt` is a boot-time fixture), so `play testtone.wav` needs something built in to play |
 
 ## Verifying it actually plays something

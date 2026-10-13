@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-# Linked by scripts/build-userland.sh with crt0.o, the C libc and
+# Linked by scripts/build-userland.sh with userland/link.ld and
 # c/mp3.c (minimp3, vendor/minimp3/) -- see ../Cargo.toml.
 [lib]
 crate-type = ["staticlib"]

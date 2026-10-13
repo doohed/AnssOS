@@ -1,0 +1,10 @@
+[build]
+target = "x86_64-unknown-none"
+
+# The target already matches what kernel/GNUmakefile asks of C: the
+# "kernel" code model (linked in the top 2 GiB), no red zone, and no
+# x87/SSE (soft-float) -- those registers belong to userland. Static
+# relocations, like the C, rather than the target's default PIC: the
+# kernel is linked at one fixed address.
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static"]

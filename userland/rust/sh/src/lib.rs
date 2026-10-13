@@ -30,6 +30,7 @@ mod prompt;
 mod term;
 
 use alloc::string::String;
+use core::ffi::{c_char, c_int};
 
 use commands::Outcome;
 use config::Config;
@@ -39,7 +40,7 @@ use prompt::State;
 use term::{Out, color};
 
 #[unsafe(no_mangle)]
-pub extern "C" fn main() -> i32 {
+pub extern "C" fn main(_argc: c_int, _argv: *const *const c_char) -> c_int {
     let mut history = History::load();
     let (mut config, configured) = Config::load();
     let mut state = State { cwd: String::new(), status: 0, duration_ms: 0 };

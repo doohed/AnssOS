@@ -106,7 +106,7 @@ column 0 joins with the previous line, and `Tab` inserts four spaces.
 - `editor.rs`: modes, motions, edits and the `:` command line;
 - `ui.rs`: drawing.
 
-It shares the `anssos` runtime (libc FFI: files, `chdir`/`getcwd`,
+It shares the `anssos` runtime (syscall wrappers: files, `chdir`/`getcwd`,
 directory listing, raw mode) and `anssos-tui` (the ratatui console
 backend) with `play` and `tile`.
 
@@ -147,12 +147,13 @@ cheaper to revisit now.
 a character sends that cell, the cursor cell and the status bar's
 position, not the screen.
 
-**Framebuffer flush (not addressed).** `virtio_gpu_flush()` transfers
+**Framebuffer flush (not addressed).** virtio-gpu's `flush()` transfers
 the *entire* framebuffer -- 4 MB at 1280x800 -- with two synchronous
 virtqueue round trips, on every redraw, no matter how little changed.
 Under TCG this dominates. The fix is a dirty-rectangle flush: track the
-changed region in `fbconsole.c` and pass those bounds in `xfer_req.r` /
-`flush_req.r` instead of `fb.width`/`fb.height`.
+changed region in `fbconsole.rs` (it already does, for the GOP path)
+and pass those bounds in the TRANSFER_TO_HOST_2D and RESOURCE_FLUSH
+rectangles instead of the whole screen.
 
 ## What it needed from the kernel
 
@@ -163,7 +164,7 @@ landed alongside it:
 |---|---|
 | `TIOCGWINSZ` | nothing could ask how big the terminal was |
 | `O_TRUNC` | writes only ever *grew* a file, so saving a shortened buffer left the old tail behind |
-| ANSI/CSI parser in `fbconsole.c` | cursor addressing had nowhere to land -- escapes were drawn as literal glyphs |
+| ANSI/CSI parser in `fbconsole.rs` | cursor addressing had nowhere to land -- escapes were drawn as literal glyphs |
 | Escape in the virtio keymap | no way to leave insert mode in a graphical window |
 | Shifted symbol row in the keymap | `:` was unreachable, so `:w` and `:q` could not be typed |
 | Ctrl tracking in the keymap | `Ctrl-b`/`Ctrl-e` are control bytes a serial terminal sends itself, but the keymap had no concept of Ctrl |

@@ -1,6 +1,6 @@
 # The shell
 
-`shell/shell.c` is the kernel-resident command shell, reading lines from
+`kernel/src/shell.rs` is the kernel-resident command shell, reading lines from
 either input path (see [architecture.md](architecture.md#console)). The
 system boots into the userland shell, [sh](sh.md), instead; this one
 takes over if `sh` exits (`sh` starts it again), and is the only place
@@ -34,7 +34,7 @@ verb-first pattern for `delete`/`copy`/`move`:
 | `sync` | flush the filesystem to disk now |
 | `run <path> [args...]` | execute a static ELF64 program in ring 3 |
 
-`vfs_remove()` refuses to delete the current directory or an ancestor of
+`vfs::remove()` refuses to delete the current directory or an ancestor of
 it -- the shell's `cwd` pointer would otherwise dangle.
 
 ## Running programs
@@ -64,10 +64,10 @@ not inherit anything else -- no environment, no open files.
 `./scripts/run-qemu.sh` defaults to `-display none` (no graphical window
 at all — `virtio-gpu`/`virtio-keyboard` still work, there's just nothing
 on screen and no keyboard focus to give them). That's deliberate: the
-shell doubles as a real **serial console**. `drivers/serial.c`'s
-`serial_poll_char()` reads bytes straight off COM1, and
-`shell/shell.c`'s `read_line()` polls it alongside
-`virtio_input_poll_char()` — whichever has a byte ready wins. Since
+shell doubles as a real **serial console**. `drivers/serial.rs`'s
+`poll_char()` reads bytes straight off COM1, and the kernel shell's
+`read_line()` polls it alongside the keyboards (`input::poll_char()`) —
+whichever has a byte ready wins. Since
 `run-qemu.sh` passes `-serial stdio`, that means **typing directly into
 the terminal you ran the script from talks to the shell**, no graphical
 window, VNC, or anything else required. This is the normal way to use
@@ -119,9 +119,9 @@ shell process) and it behaves like a real terminal.
 `virtio-blk-pci` is also worth calling out: unlike `virtio-gpu-pci`/
 `virtio-keyboard-pci` (which QEMU only ever exposes as modern virtio
 1.x devices), `virtio-blk-pci` defaults to the legacy/transitional PCI
-device id (`0x1001`) unless you pass `disable-legacy=on`. `virtio_blk.c`
-only looks for the modern id (`0x1042`, see `VIRTIO_BLK_PCI_DEVICE_ID`),
-so without that flag `virtio_blk_init()` reports "no block device
-found" even though `-device virtio-blk-pci` is right there on the
+device id (`0x1001`) unless you pass `disable-legacy=on`.
+`drivers/virtio/blk.rs` only looks for the modern id (`0x1042`, see its
+`PCI_DEVICE_ID`), so without that flag `blk::init()` reports "no block
+device found" even though `-device virtio-blk-pci` is right there on the
 command line. `scripts/run-qemu.sh` already passes it; add it yourself
 if you ever invoke `qemu-system-x86_64` directly.

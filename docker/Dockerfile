@@ -13,18 +13,19 @@ FROM debian:trixie-20260803-slim
 
 # The package set is derived from what scripts/*.sh actually invoke:
 #
-#   build-iso.sh       -> make, $CC/$LD (clang + lld, see ENV below),
-#                         xorriso, and git for the limine submodule
-#   build-userland.sh  -> the same $CC/$LD, plus python3
-#                         (gen-test-tone.py synthesizes a WAV fixture --
-#                         real binary struct packing and float math, not
-#                         a fit for bash -- see docs/play.md), plus cargo
-#                         with the x86_64-unknown-none target for sh,
-#                         play, scarf and tile (Rust, userland/rust/) -- installed
-#                         via rustup below, not apt: Debian's rustc ships
-#                         no prebuilt core/alloc for that target.
+#   build-iso.sh       -> make, cargo (the kernel is Rust), $LD (lld, see
+#                         ENV below) to link it, xorriso, and git for the
+#                         limine submodule
+#   build-userland.sh  -> cargo again (userland is Rust too), $CC for the
+#                         one C file left -- play's MP3 decoder, minimp3 --
+#                         and $LD, plus python3 (gen-test-tone.py
+#                         synthesizes a WAV fixture -- real binary struct
+#                         packing and float math, not a fit for bash -- see
+#                         docs/play.md). Rust comes from rustup below, not
+#                         apt: Debian's rustc ships no prebuilt core/alloc
+#                         for the x86_64-unknown-none target.
 #   run-qemu.sh        -> qemu-system-x86_64, qemu-img, OVMF firmware
-#   format.sh          -> clang-format
+#   format.sh          -> rustfmt
 #
 # disk-put.py (docs/play.md) is also python3 but isn't part of the build
 # -- it writes straight onto AnssOS-disk.img from the host, run by hand.
@@ -32,9 +33,8 @@ FROM debian:trixie-20260803-slim
 # mtools is the README's documented dependency for the ISO step; xorriso
 # builds the EFI boot partition itself here, but it's kept so the
 # documented install line and this image stay the same set. nasm is *not*
-# installed: the README lists it, but nothing in the tree is .asm -- the
-# kernel's assembly is GAS .S files, assembled by $CC's own integrated
-# assembler.
+# installed: nothing in the tree is .asm -- the kernel's assembly is
+# inline in its Rust (global_asm!).
 #
 # ovmf is Architecture: all in Debian (the firmware blobs are just x86
 # binaries in a data package), so it installs on arm64 unchanged and lands
@@ -43,7 +43,6 @@ FROM debian:trixie-20260803-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang \
         lld \
-        clang-format \
         make \
         git \
         ca-certificates \
@@ -56,21 +55,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Rust for userland/rust/ (sh, play, scarf, tile): a minimal stable toolchain plus the bare-metal
-# x86_64 target. On an arm64 host this is still a native toolchain --
-# x86_64-unknown-none is a cross target, like clang's --target.
+# Rust for the kernel and userland/rust/: a minimal stable toolchain plus
+# the bare-metal x86_64 target, and rustfmt for format.sh. On an arm64 host
+# this is still a native toolchain -- x86_64-unknown-none is a cross
+# target, like clang's --target.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
         | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path \
     && rustup target add x86_64-unknown-none \
+    && rustup component add rustfmt \
     && chmod -R a+w "$CARGO_HOME"
 
-# Self-configuring toolchain: both GNUmakefiles and build-userland.sh take
+# Self-configuring toolchain: kernel/GNUmakefile and build-userland.sh take
 # CC/LD from the environment (defaulting to cc/ld for a native x86_64 host
-# build), and kernel/GNUmakefile adds --target=x86_64-unknown-none only
-# when CC is actually clang. Setting these here is all it takes to make the
+# build), and build-userland.sh adds --target=x86_64-unknown-none only when
+# CC is actually clang. Setting these here is all it takes to make the
 # unmodified scripts cross-compile.
 ENV CC=clang \
     LD=ld.lld

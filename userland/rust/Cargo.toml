@@ -1,7 +1,7 @@
 # AnssOS's Rust userland: one Cargo workspace, one lockfile, one target/.
 #
-#   anssos/  the runtime every Rust program links: FFI bindings to the C
-#            libc (userland/libc.h), the global allocator (libc malloc),
+#   anssos/  the runtime every program links: _start, the int 0x80
+#            syscalls and safe wrappers, the global allocator (on brk),
 #            and the panic handler. There is no Rust std for AnssOS.
 #   tui/     anssos-tui: ratatui on AnssOS -- the console backend, plus
 #            setup/teardown shared by full-screen programs.
@@ -9,16 +9,18 @@
 #   play/    the WAV/MP3 player, also a staticlib.
 #   scarf/   the vim-style editor with a file sidebar, also a staticlib.
 #   tile/    the terminal multiplexer (a VT per pane), also a staticlib.
+#   selftest/ the self-test payloads (hello, forktest, ...), one staticlib
+#            linked once per test.
 #
 # Programs are `staticlib`s, not Rust binaries: scripts/build-userland.sh
-# links each one with crt0.o, the C libc and any C sources of its own,
-# using the same userland/link.ld as every C program. crt0 calls the
-# `main` the program exports. Build from anywhere with
+# links each one (with any C sources of its own) using userland/link.ld.
+# anssos's `_start` calls the `main` the program exports. Build from
+# anywhere with
 #   cargo build --release --manifest-path userland/rust/Cargo.toml \
 #       --config userland/rust/.cargo/config.toml
 # or plain `cargo build --release` from inside this directory.
 [workspace]
-members = ["anssos", "tui", "sh", "play", "scarf", "tile"]
+members = ["anssos", "tui", "sh", "play", "scarf", "tile", "selftest"]
 resolver = "3"
 
 [workspace.package]

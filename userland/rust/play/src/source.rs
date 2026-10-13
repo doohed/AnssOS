@@ -4,7 +4,7 @@
 //! its extension.
 //!
 //! WAV must already be PCM, 16-bit, mono/stereo, 44100/48000 Hz --
-//! exactly what virtio_snd_open() accepts. MP3 is decoded by minimp3, a
+//! exactly what the kernel's audio drivers accept. MP3 is decoded by minimp3, a
 //! C library compiled in c/mp3.c (vendored unmodified in
 //! vendor/minimp3/) and called through the FFI below; its
 //! output must also come out at 44100/48000 Hz.
@@ -170,7 +170,7 @@ unsafe extern "C" {
 }
 
 /// MP3 input is streamed through a fixed buffer -- a whole song won't
-/// fit under the 4 MiB brk heap cap (kernel/src/exec/syscall.c), and
+/// fit under the 4 MiB brk heap cap (kernel/src/exec/syscall.rs), and
 /// doesn't need to. Refilled whenever it drops below half full, so
 /// minimp3 always sees the several consecutive frames it wants before
 /// trusting a sync word.

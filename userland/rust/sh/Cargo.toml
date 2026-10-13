@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-# Linked by scripts/build-userland.sh with crt0.o and the C libc -- see
+# Linked by scripts/build-userland.sh with userland/link.ld -- see
 # ../Cargo.toml. The kernel boots straight into it (/bin/sh).
 [lib]
 crate-type = ["staticlib"]

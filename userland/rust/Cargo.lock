@@ -303,6 +303,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "selftest"
+version = "0.1.0"
+dependencies = [
+ "anssos",
+]
+
+[[package]]
 name = "sh"
 version = "0.1.0"
 dependencies = [

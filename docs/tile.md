@@ -24,7 +24,7 @@ busy-spin waiting on another process would deadlock) shaped the whole
 design.
 
 There was also no userland shell to `exec()` into a pane at all —
-`kernel/src/shell/shell.c` is kernel-resident. The first `sh` (C, M20)
+the kernel shell is kernel-resident. The first `sh` (C, M20)
 ported a narrow subset of it; the current one ([sh.md](sh.md)) has every
 file command and is what the system boots into.
 
@@ -130,12 +130,12 @@ plain boolean. `fork()` shallow-copies the *entire* `open_files[]`
 table (same as every other fd), so after spawning a pane both `tile`
 and the new child hold independent table entries referencing the same
 pipe — one process closing its own copy incorrectly closed the *shared*
-object's end out from under the other. Caught by `userland/pipetest.c`'s
+object's end out from under the other. Caught by the `pipetest` self-test's
 exec()'d-child case silently capturing zero bytes: the child's own
 `close()` of its unneeded read-end copy closed the pipe's read end
 before the exec'd program ever got a chance to write to it. Fixed by
 making `read_refs`/`write_refs` real reference counts, with
-`process_fork()` bumping them for every pipe-backed entry it copies.
+`process::fork()` bumping them for every pipe-backed entry it copies.
 
 **No close-on-exec.** Spawning a *second* pane's child inherits (via
 the same full-table `fork()` copy) the *first* pane's `in_w`/`out_r`
@@ -158,7 +158,7 @@ explicitly closes every *earlier* pane's `in_w`/`out_r` before
 ## Verification
 
 Boot-tested incrementally, same discipline as M17/M18: `pipetest.bin`
-(a `forktest.c`-shaped self-test) proved the basic round trip, the
+(a `forktest`-shaped self-test) proved the basic round trip, the
 non-blocking contract, and the real "capture an exec()'d child's
 output" pattern *before* `sh`/`tile` were built on top of it; `sh` was
 driven interactively and compared against the kernel shell for every

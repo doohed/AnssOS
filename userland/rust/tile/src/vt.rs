@@ -2,7 +2,7 @@
 //! updated by feeding it whatever the pane's programs write.
 //!
 //! It emulates exactly what the real console understands
-//! (kernel/src/console/fbconsole.c), no more and no less -- every
+//! (kernel/src/console/fbconsole.rs), no more and no less -- every
 //! program here is written against that console, so a pane has to
 //! behave the same:
 //!

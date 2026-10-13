@@ -1,5 +1,5 @@
 //! A ratatui backend for AnssOS's framebuffer console
-//! (kernel/src/console/fbconsole.c). The built-in backends (crossterm,
+//! (kernel/src/console/fbconsole.rs). The built-in backends (crossterm,
 //! termion, ...) need std; this one only needs `write()` on fd 1.
 //!
 //! The console understands a small ANSI subset, so that's all this
@@ -99,7 +99,7 @@ impl Pen {
 }
 
 /// The 16 ANSI colors, roughly as the console draws them
-/// (kernel/src/console/fbconsole.c's PALETTE) -- only used to pick the
+/// (kernel/src/console/fbconsole.rs's PALETTE) -- only used to pick the
 /// nearest one for an RGB or 256-color value.
 const PALETTE_RGB: [(u8, u8, u8); 16] = [
     (0x00, 0x00, 0x00), (0xD0, 0x50, 0x4F), (0x60, 0xB0, 0x50), (0xD8, 0xA8, 0x40),
